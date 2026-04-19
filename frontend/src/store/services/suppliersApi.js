@@ -19,6 +19,7 @@ export const suppliersApi = api.injectEndpoints({
           params: filteredParams,
         };
       },
+      keepUnusedDataFor: 60,
       providesTags: (result) =>
         result?.data?.suppliers
           ? [
@@ -150,6 +151,7 @@ export const suppliersApi = api.injectEndpoints({
 
 export const {
   useGetSuppliersQuery,
+  useLazyGetSuppliersQuery,
   useCreateSupplierMutation,
   useUpdateSupplierMutation,
   useDeleteSupplierMutation,

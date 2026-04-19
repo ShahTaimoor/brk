@@ -19,6 +19,8 @@ export const productsApi = api.injectEndpoints({
           params: filteredParams,
         };
       },
+      // Cache list queries to reduce refetch churn when navigating POS (~90s).
+      keepUnusedDataFor: 90,
       providesTags: (result) => {
         const list =
           result?.data?.products ||
@@ -165,6 +167,7 @@ export const productsApi = api.injectEndpoints({
 
 export const {
   useGetProductsQuery,
+  useLazyGetProductsQuery,
   useGetProductQuery,
   useCreateProductMutation,
   useUpdateProductMutation,

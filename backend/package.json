@@ -8,7 +8,15 @@
     "dev": "nodemon server.js",
     "configure-atlas": "node configure-atlas.js",
     "migrate:postgres": "node migrations/postgres/migrate.js",
-    "seed:admin": "node scripts/seedAdmin.js"
+    "db:reset": "node scripts/resetDatabase.js",
+    "seed:admin": "node scripts/seedAdmin.js",
+    "seed:data": "node scripts/seedData.js",
+    "seed:accounting": "node scripts/seedAccounting.js",
+    "seed:suppliers": "node scripts/seedSuppliers.js",
+    "seed:product-stock": "node scripts/seedProductStock.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

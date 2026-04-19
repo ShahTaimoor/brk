@@ -19,6 +19,7 @@ export const customersApi = api.injectEndpoints({
           params: filteredParams,
         };
       },
+      keepUnusedDataFor: 60,
       providesTags: (result) => {
         const list =
           result?.data?.customers ||
