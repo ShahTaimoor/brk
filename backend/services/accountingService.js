@@ -1,5 +1,6 @@
 const { query, transaction } = require('../config/postgres');
 const { v4: uuidv4 } = require('uuid');
+const { invalidateByPrefix } = require('../utils/ttlCache');
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function isValidUuid(v) {
@@ -21,7 +22,7 @@ class AccountingService {
   static async validateAccount(accountCode, queryFn = null) {
     const q = queryFn || query;
     const result = await q(
-      'SELECT * FROM chart_of_accounts WHERE account_code = $1 AND is_active = TRUE AND deleted_at IS NULL',
+      'SELECT * FROM chart_of_accounts WHERE UPPER(account_code) = $1 AND is_active = TRUE AND deleted_at IS NULL',
       [accountCode.toUpperCase()]
     );
 
@@ -187,10 +188,14 @@ class AccountingService {
     // If client is provided, use it directly (part of existing transaction)
     // Otherwise, create a new transaction
     if (client) {
-      return await executeTransaction(client);
+      const result = await executeTransaction(client);
+      invalidateByPrefix('reports:');
+      return result;
     } else {
       return await transaction(async (newClient) => {
-        return await executeTransaction(newClient);
+        const result = await executeTransaction(newClient);
+        invalidateByPrefix('reports:');
+        return result;
       });
     }
   }
@@ -1891,6 +1896,121 @@ class AccountingService {
       []
     );
     return new Set((result.rows || []).map(r => r.id && r.id.toString()));
+  }
+
+  /**
+   * Post journal voucher entries to the account ledger.
+   * Creates individual ledger entries for each debit/credit in the voucher.
+   * @param {Object} voucher - Journal voucher object with entries array
+   * @param {string} createdBy - User ID who is posting the voucher
+   */
+  static async postJournalVoucherToLedger(voucher, createdBy) {
+    if (!voucher || !voucher.entries || !Array.isArray(voucher.entries)) {
+      throw new Error('Invalid journal voucher: missing entries');
+    }
+
+    const entries = voucher.entries;
+    if (entries.length === 0) {
+      throw new Error('Journal voucher must have at least one entry');
+    }
+
+    // Validate that debits equal credits
+    let totalDebit = 0;
+    let totalCredit = 0;
+    for (const entry of entries) {
+      totalDebit += parseFloat(entry.debitAmount ?? entry.debit ?? 0);
+      totalCredit += parseFloat(entry.creditAmount ?? entry.credit ?? 0);
+    }
+
+    if (Math.abs(totalDebit - totalCredit) > 0.01) {
+      throw new Error(`Journal voucher is unbalanced: Debits ${totalDebit} ≠ Credits ${totalCredit}`);
+    }
+
+    const transactionId = `JV-${Date.now()}-${uuidv4().substring(0, 8)}`;
+    const transactionDate = voucher.voucherDate || voucher.voucher_date || new Date();
+
+    // Process each entry in the voucher
+    const ledgerEntries = [];
+    let entryIndex = 1;
+
+    for (const entry of entries) {
+      const accountCode = entry.accountCode || entry.account_code;
+      // Support both camelCase from repository (debitAmount/creditAmount) and raw form fields (debit/credit)
+      const debitAmount = parseFloat(entry.debitAmount ?? entry.debit ?? 0);
+      const creditAmount = parseFloat(entry.creditAmount ?? entry.credit ?? 0);
+      const description = entry.particulars || entry.description || voucher.description || 'Journal Voucher Entry';
+
+      if (!accountCode) {
+        throw new Error('Each journal voucher entry must specify an account code');
+      }
+
+      if ((debitAmount > 0 && creditAmount > 0) || (debitAmount === 0 && creditAmount === 0)) {
+        throw new Error('Each entry must have either debit OR credit amount, not both or neither');
+      }
+
+      // Validate account exists and is active
+      await this.validateAccount(accountCode);
+
+      const ledgerEntry = {
+        transaction_id: `${transactionId}-${entryIndex}`,
+        transaction_date: transactionDate,
+        account_code: accountCode.toUpperCase(),
+        debit_amount: debitAmount,
+        credit_amount: creditAmount,
+        description: description,
+        reference_type: 'journal_voucher',
+        reference_id: voucher.id,
+        reference_number: voucher.voucherNumber || voucher.voucher_number || `JV-${voucher.id?.substring(0, 8)}`,
+        customer_id: entry.customerId || entry.customer_id || null,
+        supplier_id: entry.supplierId || entry.supplier_id || null,
+        currency: 'PKR',
+        status: 'completed',
+        created_by: isValidUuid(createdBy) ? createdBy : null
+      };
+
+      ledgerEntries.push(ledgerEntry);
+      entryIndex++;
+    }
+
+    // Insert all entries in a transaction
+    await transaction(async (client) => {
+      for (const entry of ledgerEntries) {
+        await client.query(
+          `INSERT INTO account_ledger (
+            transaction_id, transaction_date, account_code,
+            debit_amount, credit_amount, description,
+            reference_type, reference_id, reference_number,
+            customer_id, supplier_id, currency, status, created_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          [
+            entry.transaction_id,
+            entry.transaction_date,
+            entry.account_code,
+            entry.debit_amount,
+            entry.credit_amount,
+            entry.description,
+            entry.reference_type,
+            entry.reference_id,
+            entry.reference_number,
+            entry.customer_id,
+            entry.supplier_id,
+            entry.currency,
+            entry.status,
+            entry.created_by
+          ]
+        );
+      }
+
+      // Update account balances for all affected accounts
+      const affectedAccounts = [...new Set(ledgerEntries.map(e => e.account_code))];
+      for (const accountCode of affectedAccounts) {
+        await this.updateAccountBalance(client, accountCode);
+      }
+      
+      // Invalidate report cache to ensure real-time updates
+      const { invalidateByPrefix } = require('../utils/ttlCache');
+      invalidateByPrefix('reports:');
+    });
   }
 }
 

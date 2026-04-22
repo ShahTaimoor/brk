@@ -1310,41 +1310,57 @@ class ReportsService {
     }
 
     const bankSummarySql = `
+      WITH bank_ledgers AS (
+        -- PULL 100% OF DATA FROM THE LEDGER FOR ACCOUNT 1001
+        SELECT 
+          al.debit_amount,
+          al.credit_amount,
+          -- Resolve Bank ID: Try to find which bank this entry belongs to
+          COALESCE(
+            br.bank_id,
+            bp.bank_id,
+            (SELECT b2.id FROM banks b2 WHERE b2.deleted_at IS NULL ORDER BY b2.bank_name ASC LIMIT 1)
+          ) as resolved_bank_id
+        FROM account_ledger al
+        LEFT JOIN bank_receipts br ON al.reference_id = br.id AND al.reference_type = 'bank_receipt'
+        LEFT JOIN bank_payments bp ON al.reference_id = bp.id AND al.reference_type = 'bank_payment'
+        WHERE al.account_code = '1001'
+          AND al.status = 'completed'
+          AND al.reversed_at IS NULL
+          AND al.reference_type != 'bank_opening_balance'
+          ${dateClause.replace('date', 'al.transaction_date')}
+      ),
+      grouped_stats AS (
+        SELECT 
+          resolved_bank_id,
+          SUM(debit_amount) as total_receipts,
+          SUM(credit_amount) as total_payments
+        FROM bank_ledgers
+        GROUP BY resolved_bank_id
+      )
       SELECT 
         b.id,
         b.bank_name as "bankName",
         b.account_name as "accountName",
         b.account_number as "accountNumber",
         COALESCE(b.opening_balance, 0) as "openingBalance",
-        COALESCE(r.total_receipts, 0) as "totalReceipts",
-        COALESCE(p.total_payments, 0) as "totalPayments"
+        COALESCE(gs.total_receipts, 0) as "totalReceipts",
+        COALESCE(gs.total_payments, 0) as "totalPayments"
       FROM banks b
-      LEFT JOIN (
-        SELECT bank_id, COALESCE(SUM(amount), 0) as total_receipts
-        FROM bank_receipts
-        WHERE deleted_at IS NULL
-        ${dateClause}
-        ${bankIdFilterReceiptTable}
-        GROUP BY bank_id
-      ) r ON r.bank_id = b.id
-      LEFT JOIN (
-        SELECT bank_id, COALESCE(SUM(amount), 0) as total_payments
-        FROM bank_payments
-        WHERE deleted_at IS NULL
-        ${dateClause}
-        ${bankIdFilterPaymentTable}
-        GROUP BY bank_id
-      ) p ON p.bank_id = b.id
+      LEFT JOIN grouped_stats gs ON gs.resolved_bank_id = b.id
       WHERE b.deleted_at IS NULL
       ${bankIdFilterBankTable}
       ORDER BY b.bank_name ASC, b.account_number ASC
     `;
 
     const bankResult = await query(bankSummarySql, bankParams);
+    
+    // Process bank rows
     const banks = bankResult.rows.map(row => {
       const openingBalance = parseFloat(row.openingBalance || 0);
       const totalReceipts = parseFloat(row.totalReceipts || 0);
       const totalPayments = parseFloat(row.totalPayments || 0);
+
       return {
         ...row,
         openingBalance,
@@ -1354,10 +1370,14 @@ class ReportsService {
       };
     });
 
+    // The inclusive SQL query above now captures EVERYTHING for account 1001,
+    // so no manual merging or extra union steps are needed.
+
+
     const cashSummarySql = `
       SELECT 
-        COALESCE((SELECT SUM(amount) FROM cash_receipts WHERE deleted_at IS NULL ${dateClause}), 0) as "totalReceipts",
-        COALESCE((SELECT SUM(amount) FROM cash_payments WHERE deleted_at IS NULL ${dateClause}), 0) as "totalPayments"
+        COALESCE((SELECT SUM(debit_amount) FROM account_ledger WHERE account_code = '1000' AND status = 'completed' AND reversed_at IS NULL ${dateClause.replace('date', 'transaction_date')}), 0) as "totalReceipts",
+        COALESCE((SELECT SUM(credit_amount) FROM account_ledger WHERE account_code = '1000' AND status = 'completed' AND reversed_at IS NULL ${dateClause.replace('date', 'transaction_date')}), 0) as "totalPayments"
     `;
     const [cashResult, cashOpeningDisplay] = await Promise.all([
       query(cashSummarySql, dateParams),
