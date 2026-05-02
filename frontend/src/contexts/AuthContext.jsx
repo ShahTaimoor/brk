@@ -1,8 +1,12 @@
 import { toast } from 'sonner';
+import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
+  authApi,
   useLoginMutation,
+  useRequestTwoFactorCodeMutation,
+  useVerifyTwoFactorMutation,
   useCurrentUserQuery,
   useLogoutMutation,
 } from '../store/services/authApi';
@@ -17,6 +21,14 @@ export const useAuth = () => {
   const navigate = useNavigate();
   const { user, token, isAuthenticated, status, error } = useAppSelector((s) => s.auth);
   const isLoginPage = location.pathname === '/login';
+  const hasStoredSessionHint = (() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return !!(localStorage.getItem('authToken') || localStorage.getItem('authUser'));
+    } catch {
+      return false;
+    }
+  })();
 
   const {
     isLoading: currentUserLoading,
@@ -24,8 +36,10 @@ export const useAuth = () => {
     error: currentUserErrorData,
     refetch: refetchCurrentUser,
   } = useCurrentUserQuery(undefined, {
-    // Skip when: on login page, or already authenticated with user (no need to refetch)
-    skip: isLoginPage || (isAuthenticated && !!user),
+    // Skip only on login or when there is no session hint and Redux says logged out.
+    // Do NOT skip just because user + token exist in storage — we must validate the JWT on load
+    // or expired tokens let ProtectedRoute render the app while every API call returns 401.
+    skip: isLoginPage || (!isAuthenticated && !hasStoredSessionHint),
     // Disable retries completely to prevent infinite loading
     retry: false,
     // Don't refetch on window focus to prevent unnecessary requests
@@ -37,7 +51,10 @@ export const useAuth = () => {
   });
 
   const [loginMutation, { isLoading: loginLoading }] = useLoginMutation();
+  const [requestTwoFactorMutation, { isLoading: requestTwoFactorLoading }] = useRequestTwoFactorCodeMutation();
+  const [verifyTwoFactorMutation, { isLoading: verifyTwoFactorLoading }] = useVerifyTwoFactorMutation();
   const [logoutMutation] = useLogoutMutation();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const login = async (email, password) => {
     try {
@@ -51,15 +68,56 @@ export const useAuth = () => {
     }
   };
 
+  const requestTwoFactorCode = async ({ channel = 'email', email, phone }) => {
+    try {
+      const response = await requestTwoFactorMutation({ channel, email, phone }).unwrap();
+      toast.info(
+        channel === 'sms'
+          ? 'Verification code sent to your mobile number.'
+          : 'Verification code sent to your email.'
+      );
+      return {
+        success: true,
+        twoFactorRequired: true,
+        tempToken: response.tempToken,
+      };
+    } catch (error) {
+      const message = error?.data?.message || error?.message || 'Could not send verification code';
+      toast.error(message);
+      return { success: false, error: message };
+    }
+  };
+
+  const verifyTwoFactor = async (tempToken, code) => {
+    try {
+      await verifyTwoFactorMutation({ tempToken, code }).unwrap();
+      toast.success('Login successful!');
+      return { success: true };
+    } catch (error) {
+      const message = error?.data?.message || error?.message || '2FA verification failed';
+      toast.error(message);
+      return { success: false, error: message };
+    }
+  };
+
   const logout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+
+    // Clear local session first to avoid role-specific UI race conditions
+    // where user state can appear "stuck" during async logout calls.
+    dispatch(logoutAction());
+    dispatch(authApi.util.resetApiState());
+    navigate('/login', { replace: true });
+    toast.success('Logged out successfully');
+
     try {
       await logoutMutation().unwrap();
     } catch (error) {
       // Continue with logout even if API call fails
+    } finally {
+      setIsLoggingOut(false);
     }
-    dispatch(logoutAction());
-    toast.success('Logged out successfully');
-    navigate('/login', { replace: true });
   };
 
   const updateUser = (userData) => {
@@ -78,8 +136,11 @@ export const useAuth = () => {
   // - Only show loading during initial auth check or login process
   // - Once we have an error (401), stop showing loading
   const loading = isLoginPage
-    ? loginLoading
-    : (status === 'loading' || (currentUserLoading && !currentUserError)) || loginLoading;
+    ? (loginLoading || verifyTwoFactorLoading || requestTwoFactorLoading)
+    : (status === 'loading' || (currentUserLoading && !currentUserError)) ||
+      loginLoading ||
+      verifyTwoFactorLoading ||
+      requestTwoFactorLoading;
 
   return {
     user,
@@ -88,7 +149,10 @@ export const useAuth = () => {
     loading,
     error: error || (currentUserError ? currentUserErrorData : null),
     login,
+    requestTwoFactorCode,
+    verifyTwoFactor,
     logout,
+    isLoggingOut,
     updateUser,
     hasPermission,
     refetchCurrentUser,

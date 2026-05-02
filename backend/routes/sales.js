@@ -13,6 +13,8 @@ const productVariantRepository = require('../repositories/ProductVariantReposito
 const customerRepository = require('../repositories/CustomerRepository');
 const cashReceiptRepository = require('../repositories/postgres/CashReceiptRepository');
 const bankReceiptRepository = require('../repositories/postgres/BankReceiptRepository');
+const settingsService = require('../services/settingsService');
+const { getEffectiveGlobalTaxRate } = require('../utils/globalTax');
 
 /** Check if order can be cancelled (works with plain order object from repo). */
 function canBeCancelled(order) {
@@ -105,7 +107,7 @@ router.get('/', [
   processDateFilter(['billDate', 'createdAt']), // Support both billDate and createdAt
   requirePermission('view_sales'),
   maskSensitiveData('view_product_costs', ['items.unitCost', 'items.cost_price'])
-], async (req, res) => {
+], async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -126,8 +128,7 @@ router.get('/', [
       pagination: result.pagination
     });
   } catch (error) {
-    console.error('Get orders error:', error);
-    res.status(500).json({ message: 'Server error' });
+    return next(error);
   }
 });
 
@@ -144,7 +145,7 @@ router.get('/cctv-orders', [
   query('customerId').optional().isUUID(4),
   requirePermission('view_sales'), // Or specific CCTV permission if needed
   maskSensitiveData('view_product_costs', ['items.unitCost', 'items.cost_price'])
-], async (req, res) => {
+], async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -194,8 +195,7 @@ router.get('/cctv-orders', [
       }
     });
   } catch (error) {
-    console.error('Get CCTV orders error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    return next(error);
   }
 });
 
@@ -207,7 +207,7 @@ router.get('/period-summary', [
   query('dateFrom').isISO8601().withMessage('Invalid start date'),
   query('dateTo').isISO8601().withMessage('Invalid end date'),
   requirePermission('view_financial_data')
-], async (req, res) => {
+], async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -246,8 +246,7 @@ router.get('/period-summary', [
     };
     res.json({ data: summary });
   } catch (error) {
-    console.error('Get period summary error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    return next(error);
   }
 });
 
@@ -364,7 +363,7 @@ router.post('/', [
   body('payment.advanceAmount').optional().isFloat({ min: 0 }).withMessage('Advance amount must be a positive number'),
   body('isTaxExempt').optional().isBoolean().withMessage('Tax exempt must be a boolean'),
   body('billDate').optional().isISO8601().withMessage('Valid bill date required (ISO 8601 format)')
-], async (req, res) => {
+], async (req, res, next) => {
   // Capture bill start time (when billing begins)
   const billStartTime = new Date();
 
@@ -381,11 +380,12 @@ router.post('/', [
       });
     }
 
-    const { customer, items, orderType, payment, notes, isTaxExempt, billDate, appliedDiscounts, discountAmount, subtotal, total, tax } = req.body;
+    const { clientSideId, customer, items, orderType, payment, notes, isTaxExempt, billDate, appliedDiscounts, discountAmount, subtotal, total, tax } = req.body;
 
-    // Use SalesService to create the sale (invoice); appliedDiscounts/discountAmount from POS discount codes
+    // Use SalesService to create the sale (invoice)
     const savedOrder = await salesService.createSale(
       {
+        clientSideId,
         customer,
         items,
         orderType,
@@ -412,18 +412,43 @@ router.post('/', [
       order: orderForResponse
     });
   } catch (error) {
-    console.error('Create order error:', error);
-    res.status(500).json({
-      message: error.message || 'Server error. Please try again later.',
-      error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    return next(error);
+  }
+});
+
+// @route   POST /api/sales/sync
+// @desc    Sync offline-created order
+// @access  Private
+router.post('/sync', [
+  auth,
+  requirePermission('create_orders'),
+  body('clientSideId').isUUID().withMessage('Valid clientSideId required for sync'),
+  body('items').isArray({ min: 1 }).withMessage('Order must have at least one item'),
+  body('payment.method').isIn(['cash', 'credit_card', 'debit_card', 'check', 'account', 'split', 'bank']).withMessage('Invalid payment method')
+], async (req, res, next) => {
+  const billStartTime = new Date();
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const savedOrder = await salesService.createSale(req.body, req.user);
+
+    res.status(201).json({
+      success: true,
+      message: 'Offline order synced successfully',
+      order: savedOrder
     });
+  } catch (error) {
+    return next(error);
   }
 });
 
 // @route   POST /api/sales/post-missing-to-ledger
 // @desc    Backfill account ledger: post any sales/invoices that were never recorded to the ledger (e.g. created before the fix).
 // @access  Private
-router.post('/post-missing-to-ledger', auth, requirePermission('view_reports'), async (req, res) => {
+router.post('/post-missing-to-ledger', auth, requirePermission('view_reports'), async (req, res, next) => {
   try {
     const dateFrom = req.query.dateFrom || req.body?.dateFrom;
     const dateTo = req.query.dateTo || req.body?.dateTo;
@@ -434,15 +459,14 @@ router.post('/post-missing-to-ledger', auth, requirePermission('view_reports'), 
       ...result
     });
   } catch (error) {
-    console.error('Post missing sales to ledger error:', error);
-    return res.status(500).json({ success: false, message: error.message || 'Failed to post missing sales to ledger.' });
+    return next(error);
   }
 });
 
 // @route   POST /api/sales/sync-ledger
 // @desc    Sync sales to ledger: update existing sale entries + post missing (fixes old edits not reflected).
 // @access  Private
-router.post('/sync-ledger', auth, requirePermission('view_reports'), async (req, res) => {
+router.post('/sync-ledger', auth, requirePermission('view_reports'), async (req, res, next) => {
   try {
     const dateFrom = req.query.dateFrom || req.body?.dateFrom;
     const dateTo = req.query.dateTo || req.body?.dateTo;
@@ -453,8 +477,7 @@ router.post('/sync-ledger', auth, requirePermission('view_reports'), async (req,
       ...result
     });
   } catch (error) {
-    console.error('Sync sales ledger error:', error);
-    return res.status(500).json({ success: false, message: error.message || 'Failed to sync sales ledger.' });
+    return next(error);
   }
 });
 
@@ -573,7 +596,13 @@ router.put('/:id', [
 
     // Normalize for Postgres: order has total, subtotal, discount, tax; items array
     const orderTotal = () => parseFloat(order.total) || 0;
-    const orderPricing = { total: orderTotal(), subtotal: parseFloat(order.subtotal) || 0, discountAmount: parseFloat(order.discount) || 0, taxAmount: parseFloat(order.tax) || 0, isTaxExempt: false };
+    const orderPricing = {
+      total: orderTotal(),
+      subtotal: parseFloat(order.subtotal) || 0,
+      discountAmount: parseFloat(order.discount) || 0,
+      taxAmount: parseFloat(order.tax) || 0,
+      isTaxExempt: !!(order.is_tax_exempt ?? order.isTaxExempt ?? false)
+    };
     if (!order.pricing) order.pricing = orderPricing;
     if (!order.payment) order.payment = { method: order.payment_method || 'cash', status: order.payment_status || 'pending', amountPaid: 0, remainingBalance: orderTotal(), isPartialPayment: false };
 
@@ -626,8 +655,15 @@ router.put('/:id', [
       order.payment.status = amt >= (parseFloat(order.pricing?.total ?? order.total) || 0) ? 'paid' : (amt > 0 ? 'partial' : 'pending');
     }
 
+    if (req.body.isTaxExempt !== undefined) {
+      order.pricing.isTaxExempt = !!req.body.isTaxExempt;
+    }
+
     // Update items if provided and recalculate pricing
     if (req.body.items && req.body.items.length > 0) {
+      const compSettings = await settingsService.getCompanySettings();
+      const globalTax = getEffectiveGlobalTaxRate(compSettings, order.pricing.isTaxExempt);
+
       // Validate products and stock availability
       for (const item of req.body.items) {
         // Try to find as product first, then as variant
@@ -690,13 +726,8 @@ router.put('/:id', [
         const itemSubtotal = item.quantity * item.unitPrice;
         const itemDiscount = itemSubtotal * ((item.discountPercent || 0) / 100);
         const itemTaxable = itemSubtotal - itemDiscount;
-        // Use taxRate from item if provided, otherwise get from product/variant
-        const taxRate = item.taxRate !== undefined
-          ? item.taxRate
-          : (isVariantForTax
-            ? (productForTax?.baseProduct?.taxSettings?.taxRate || 0)
-            : (productForTax?.taxSettings?.taxRate || 0));
-        const itemTax = order.pricing.isTaxExempt ? 0 : itemTaxable * taxRate;
+        const taxRate = globalTax.rateDecimal;
+        const itemTax = itemTaxable * taxRate;
 
         // Get unit cost for P&L (COGS) - same logic as createSale
         let unitCost = 0;
@@ -720,7 +751,7 @@ router.put('/:id', [
           unitCost,
           cost_price: unitCost,
           discountPercent: item.discountPercent || 0,
-          taxRate: item.taxRate || 0,
+          taxRate,
           subtotal: itemSubtotal,
           discountAmount: itemDiscount,
           taxAmount: itemTax,

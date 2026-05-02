@@ -27,7 +27,9 @@ const PrintModal = ({
   hasData = true,
   autoPrint = false,
   zIndex = 50,
-  getPdfData
+  getPdfData,
+  onAfterPrint,
+  pageStyle = PRINT_PAGE_STYLE
 }) => {
   const printRef = useRef(null);
 
@@ -77,7 +79,12 @@ const PrintModal = ({
       footer={footer}
       zIndex={zIndex}
     >
-      <PrintWrapper ref={printRef} documentTitle={documentTitle} pageStyle={PRINT_PAGE_STYLE}>
+      <PrintWrapper
+        ref={printRef}
+        documentTitle={documentTitle}
+        pageStyle={pageStyle}
+        onAfterPrint={onAfterPrint}
+      >
         {hasData ? (
           <div className="print-preview-scale print-modal-preview max-w-full overflow-auto flex justify-center">
             {children}

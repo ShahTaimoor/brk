@@ -4,6 +4,7 @@ import * as Icons from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTab } from '../contexts/TabContext';
 import { getComponentInfo } from '../utils/componentUtils';
+import { canAccessRoute } from '../config/routeAccess';
 
 const MobileBottomNav = () => {
   const navigate = useNavigate();
@@ -102,15 +103,13 @@ const MobileBottomNav = () => {
 
   // Filter items based on permissions
   const visibleItems = config.filter(item => {
-    const componentInfo = getComponentInfo(item.href);
-    const permission = componentInfo?.permission || item.permission;
-    return !permission || user?.role === 'admin' || hasPermission(permission);
+    return canAccessRoute(item.href, user, hasPermission);
   });
 
   if (visibleItems.length === 0) return null;
 
   return (
-    <div className="lg:hidden fixed bottom-0 left-0 right-0 z-[100] bg-white/90 border-t border-gray-200 backdrop-blur-md pb-safe">
+    <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/90 border-t border-gray-200 backdrop-blur-md pb-safe">
       <div className="flex items-center justify-around px-2 py-2 max-w-screen-sm mx-auto h-16">
         {visibleItems.map((item) => {
           const IconComponent = Icons[item.icon] || Icons.Circle;

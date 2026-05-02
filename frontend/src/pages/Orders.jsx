@@ -262,6 +262,7 @@ export const Orders = () => {
   });
 
   const companySettings = companySettingsData?.data || {};
+  const taxSystemEnabled = companySettings.taxEnabled === true;
   const companyName = companySettings.companyName?.trim() || 'Your Company Name';
   const companyAddress = companySettings.address?.trim() || '';
   const companyPhone = companySettings.contactNumber?.trim() || '';
@@ -355,7 +356,6 @@ export const Orders = () => {
             totalPrice: item.total ?? (item.quantity * (item.unitPrice ?? item.unit_price ?? 0))
           };
         }),
-        isTaxExempt: freshOrder.isTaxExempt ?? freshOrder.is_tax_exempt ?? true,
         payment: paymentForEditor,
         // The "Pending" label in the UI is based on the invoice/order status (not payment.status).
         // Pass it through so the edit screen can correctly initialize Amount Paid.
@@ -733,18 +733,35 @@ export const Orders = () => {
                       <button onClick={() => handleView(order)} className="p-1 text-primary-600 hover:text-primary-800" title="View"><Eye className="h-4 w-4" /></button>
                       <button onClick={() => handlePrint(order)} className="p-1 text-green-600 hover:text-green-800" title="Print"><Printer className="h-4 w-4" /></button>
                       <ExcelExportButton
-                        getData={() => {
-                          const payload = getInvoicePdfPayload(order, companySettings, 'Sales Invoice', 'Customer');
-                          return {
-                            ...payload,
-                            filename: `Invoice_${order.order_number ?? order.orderNumber}.xlsx`
-                          };
+                        getData={async () => {
+                          try {
+                            const result = await fetchOrderById(order._id || order.id).unwrap();
+                            const freshOrder = result?.order || result?.data?.order || result || order;
+                            const payload = getInvoicePdfPayload(freshOrder, companySettings, 'Sales Invoice', 'Customer');
+                            return {
+                              ...payload,
+                              filename: `Invoice_${order.order_number ?? order.orderNumber}.xlsx`
+                            };
+                          } catch (err) {
+                            return {
+                              ...getInvoicePdfPayload(order, companySettings, 'Sales Invoice', 'Customer'),
+                              filename: `Invoice_${order.order_number ?? order.orderNumber}.xlsx`
+                            };
+                          }
                         }}
                         label=""
                         className="p-1 bg-transparent border-none shadow-none hover:bg-transparent text-green-600 hover:text-green-800 px-1 py-1"
                       />
                       <PdfExportButton
-                        getData={() => getInvoicePdfPayload(order, companySettings, 'Sales Invoice', 'Customer')}
+                        getData={async () => {
+                          try {
+                            const result = await fetchOrderById(order._id || order.id).unwrap();
+                            const freshOrder = result?.order || result?.data?.order || result || order;
+                            return getInvoicePdfPayload(freshOrder, companySettings, 'Sales Invoice', 'Customer');
+                          } catch (err) {
+                            return getInvoicePdfPayload(order, companySettings, 'Sales Invoice', 'Customer');
+                          }
+                        }}
                         label=""
                         className="p-1 bg-transparent border-none shadow-none hover:bg-transparent text-red-600 hover:text-red-800 px-1 py-1"
                       />
@@ -1008,10 +1025,12 @@ export const Orders = () => {
                           <td className="px-4 py-2">Subtotal:</td>
                           <td className="px-4 py-2 text-right">{Math.round(viewSubtotal)}</td>
                         </tr>
+                        {taxSystemEnabled && viewTax > 0 && (
                         <tr>
                           <td className="px-4 py-2">Tax:</td>
                           <td className="px-4 py-2 text-right">{Math.round(viewTax)}</td>
                         </tr>
+                        )}
                         <tr>
                           <td className="px-4 py-2">Discount:</td>
                           <td className="px-4 py-2 text-right">{Math.round(viewDiscount)}</td>

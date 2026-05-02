@@ -13,8 +13,12 @@ const profitDistributionService = require('./profitDistributionService');
 const discountService = require('./discountService');
 const paymentRepository = require('../repositories/postgres/PaymentRepository');
 const settingsService = require('./settingsService');
+const { getEffectiveGlobalTaxRate } = require('../utils/globalTax');
 const purchaseInvoiceRepository = require('../repositories/postgres/PurchaseInvoiceRepository');
 const { withBusinessTransaction } = require('./withBusinessTransaction');
+
+/** User-facing message when AR would exceed credit limit (sales order confirm / invoice). */
+const CREDIT_LIMIT_EXCEEDED_INVOICE_MESSAGE = 'Credit limit exceeded. Invoice cannot be created';
 
 // Helper function to parse date string as local date (not UTC)
 const parseLocalDate = (dateString) => {
@@ -519,6 +523,33 @@ class SalesService {
   // Duplicate method removed - using the one above
 
   /**
+   * Throws if posting this invoice on account would exceed the customer's credit limit.
+   * Uses ledger balance (AR) + unpaid invoice amount vs numeric credit_limit.
+   */
+  async assertCreditLimitForAccountInvoiceWithCustomer(customerData, orderTotal, payment) {
+    if (!customerData) return;
+    const creditLimit = Number(customerData.credit_limit ?? customerData.creditLimit ?? 0);
+    if (!Number.isFinite(creditLimit) || creditLimit <= 0) return;
+    const total = Number(orderTotal) || 0;
+    const amountPaid = parseFloat(payment?.amount ?? 0) || 0;
+    const unpaidAmount = total - amountPaid;
+    const method = String(payment?.method || '').toLowerCase();
+    if (method !== 'account' && unpaidAmount <= 0) return;
+    const customerId = customerData.id || customerData._id;
+    if (!customerId) return;
+    const currentBalance = await AccountingService.getCustomerBalance(customerId);
+    if (currentBalance + unpaidAmount > creditLimit) {
+      throw new Error(CREDIT_LIMIT_EXCEEDED_INVOICE_MESSAGE);
+    }
+  }
+
+  async assertCreditLimitForAccountInvoice(customerId, orderTotal, payment) {
+    if (!customerId) return;
+    const customerData = await customerRepository.findById(customerId);
+    await this.assertCreditLimitForAccountInvoiceWithCustomer(customerData, orderTotal, payment);
+  }
+
+  /**
    * Create a new sale (invoice)
    * @param {object} data - Sale data
    * @param {object} user - User creating the sale
@@ -527,12 +558,19 @@ class SalesService {
    */
   async createSale(data, user, options = {}) {
     const { skipInventoryUpdate = false } = options;
-    const { customer, items, orderType, payment, notes, isTaxExempt, billDate, billStartTime, salesOrderId, appliedDiscounts: payloadDiscounts, discountAmount: payloadDiscountAmount, subtotal: payloadSubtotal, total: payloadTotal, tax: payloadTax } = data;
+    const { clientSideId, customer, items, orderType, payment, notes, isTaxExempt, billDate, billStartTime, salesOrderId, appliedDiscounts: payloadDiscounts, discountAmount: payloadDiscountAmount, subtotal: payloadSubtotal, total: payloadTotal, tax: payloadTax } = data;
+
+    // Check for idempotency if clientSideId is provided
+    if (clientSideId) {
+      const existing = await salesRepository.findByClientSideId(clientSideId);
+      if (existing) return existing;
+    }
 
     // Generate order number if not provided
     const settings = await settingsService.getCompanySettings();
     const orderSettings = settings?.orderSettings || {};
     const allowSaleWithoutProduct = orderSettings.allowSaleWithoutProduct === true;
+    const globalTax = getEffectiveGlobalTaxRate(settings, !!isTaxExempt);
 
     // Validate customer if provided
     let customerData = null;
@@ -598,13 +636,8 @@ class SalesService {
       const itemSubtotal = item.quantity * unitPrice;
       const itemDiscount = itemSubtotal * (itemDiscountPercent / 100);
       const itemTaxable = itemSubtotal - itemDiscount;
-      const taxRate =
-        isManual || !product
-          ? 0
-          : isVariant
-            ? (product.baseProduct?.taxSettings?.taxRate ?? 0)
-            : (product.tax_settings?.tax_rate ?? product.taxSettings?.taxRate ?? 0);
-      const itemTax = isTaxExempt ? 0 : itemTaxable * taxRate;
+      const taxRate = globalTax.rateDecimal;
+      const itemTax = itemTaxable * taxRate;
 
       let unitCost = 0;
       let productId = null;
@@ -657,28 +690,14 @@ class SalesService {
     // even when no discount code is selected.
     if (payloadDiscountAmount != null || payloadTax != null || payloadTotal != null) {
       if (payloadDiscountAmount != null) finalDiscount = Number(payloadDiscountAmount);
-      if (payloadTax != null) finalTax = Number(payloadTax);
+      if (!globalTax.enabled) finalTax = 0;
+      else if (payloadTax != null) finalTax = Number(payloadTax);
       if (payloadTotal != null) orderTotal = Number(payloadTotal);
       else orderTotal = subtotal - finalDiscount + finalTax;
     }
 
-    // Check credit limit for credit sales (account payment or partial payment)
-    if (customerData && (customerData.credit_limit || customerData.creditLimit) > 0) {
-      const creditLimit = customerData.credit_limit || customerData.creditLimit;
-      const amountPaid = payment.amount || 0;
-      const unpaidAmount = orderTotal - amountPaid;
-
-      if (payment.method === 'account' || unpaidAmount > 0) {
-        // Fetch real-time balance from ledger for credit check
-        const customerId = customerData.id || customerData._id;
-        const currentBalance = await AccountingService.getCustomerBalance(customerId);
-        const newBalanceAfterOrder = currentBalance + unpaidAmount;
-
-        if (newBalanceAfterOrder > creditLimit) {
-          const customerName = customerData.business_name || customerData.businessName || customerData.name || 'Customer';
-          throw new Error(`Credit limit exceeded for customer ${customerName}. Available credit: ${creditLimit - currentBalance}`);
-        }
-      }
+    if (customerData) {
+      await this.assertCreditLimitForAccountInvoiceWithCustomer(customerData, orderTotal, payment);
     }
 
     let orderNumber = data.orderNumber;
@@ -719,7 +738,8 @@ class SalesService {
       notes,
       createdBy: user.id || user._id?.toString(),
       appliedDiscounts: appliedDiscountsForSale,
-      orderType: orderType || 'retail'
+      orderType: orderType || 'retail',
+      clientSideId: clientSideId || null
     };
 
     const order = await withBusinessTransaction(async ({ client, addPostCommit }) => {
@@ -735,7 +755,7 @@ class SalesService {
             reference: 'Sales Invoice',
             performedBy: user._id,
             notes: 'Stock reduced due to sales invoice creation'
-          }, { client });
+          }, { client, skipAccountingEntry: true });
         }
       }
 
@@ -782,6 +802,39 @@ class SalesService {
             } catch (e) {
               console.error('Failed to record discount usage for', code, e.message);
             }
+          }
+        }
+      });
+
+      // Smart Pricing Logic: Update last_sale_price and auto-save retail price if empty
+      addPostCommit(async () => {
+        const productService = require('./productServicePostgres');
+        for (const item of orderItems) {
+          if (item.isManual || !item.product) continue;
+          
+          try {
+            const product = await productService.getProductById(item.product);
+            if (!product) continue;
+
+            const updates = {
+              pricing: {
+                ...product.pricing,
+                lastSale: item.unitPrice
+              }
+            };
+
+            // If retail price is not set (0), save this sale price as the permanent retail price
+            if (!product.pricing?.retail || product.pricing.retail === 0) {
+              updates.pricing.retail = item.unitPrice;
+              // Also update wholesale to match if it was also 0/not set
+              if (!product.pricing?.wholesale || product.pricing.wholesale === 0) {
+                updates.pricing.wholesale = item.unitPrice;
+              }
+            }
+
+            await productService.updateProduct(item.product, updates, user.id || user._id);
+          } catch (err) {
+            console.error(`Failed to update smart pricing for product ${item.product}:`, err.message);
           }
         }
       });

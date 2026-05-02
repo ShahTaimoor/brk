@@ -38,7 +38,6 @@ import {
   ClipboardList
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { toast } from 'sonner';
 import ErrorBoundary from './ErrorBoundary';
 import MobileNavigation from './MobileNavigation';
 import { loadSidebarConfig } from './MultiTabLayout';
@@ -55,22 +54,40 @@ export const navigation = [
   {
     name: 'Sales',
     icon: ShoppingCart,
-    permission: PERMISSIONS.VIEW_SALES,
+    permissionAny: [
+      PERMISSIONS.VIEW_SALES_ORDERS,
+      PERMISSIONS.VIEW_SALES_INVOICES,
+      PERMISSIONS.CREATE_SALES_ORDERS,
+      PERMISSIONS.EDIT_SALES_ORDERS,
+      PERMISSIONS.CREATE_SALES_INVOICES,
+      PERMISSIONS.EDIT_SALES_INVOICES,
+      PERMISSIONS.CREATE_ORDERS,
+      PERMISSIONS.EDIT_ORDERS,
+    ],
     children: [
       { name: 'Sales Orders', href: '/sales-orders', icon: FileText, permission: PERMISSIONS.VIEW_SALES_ORDERS },
-      { name: 'Sales', href: '/sales', icon: CreditCard, permission: PERMISSIONS.MANAGE_SALES },
-      { name: 'Sales Invoices', href: '/sales-invoices', icon: Search, permission: PERMISSIONS.VIEW_SALES_ORDERS },
+      { name: 'Sales', href: '/sales', icon: CreditCard, permissionAny: [PERMISSIONS.CREATE_ORDERS, PERMISSIONS.EDIT_ORDERS, PERMISSIONS.MANAGE_SALES] },
+      { name: 'Sales Invoices', href: '/sales-invoices', icon: Search, permission: PERMISSIONS.VIEW_SALES_INVOICES },
     ]
   },
 
   {
     name: 'Purchase',
     icon: Truck,
-    permission: PERMISSIONS.MANAGE_INVENTORY,
+    permissionAny: [
+      PERMISSIONS.VIEW_PURCHASE_ORDERS,
+      PERMISSIONS.VIEW_PURCHASE_INVOICES,
+      PERMISSIONS.CREATE_PURCHASE_ORDERS,
+      PERMISSIONS.EDIT_PURCHASE_ORDERS,
+      PERMISSIONS.CREATE_PURCHASE_INVOICES,
+      PERMISSIONS.EDIT_PURCHASE_INVOICES,
+      PERMISSIONS.CREATE_ORDERS,
+      PERMISSIONS.EDIT_ORDERS,
+    ],
     children: [
-      { name: 'Purchase Orders', href: '/purchase-orders', icon: FileText, permission: PERMISSIONS.MANAGE_INVENTORY },
-      { name: 'Purchase', href: '/purchase', icon: Truck, permission: PERMISSIONS.MANAGE_INVENTORY },
-      { name: 'Purchase Invoices', href: '/purchase-invoices', icon: Search, permission: PERMISSIONS.MANAGE_INVENTORY },
+      { name: 'Purchase Orders', href: '/purchase-orders', icon: FileText, permissionAny: [PERMISSIONS.VIEW_PURCHASE_ORDERS, PERMISSIONS.CREATE_PURCHASE_ORDERS, PERMISSIONS.EDIT_PURCHASE_ORDERS] },
+      { name: 'Purchase', href: '/purchase', icon: Truck, permissionAny: [PERMISSIONS.CREATE_ORDERS, PERMISSIONS.EDIT_ORDERS] },
+      { name: 'Purchase Invoices', href: '/purchase-invoices', icon: Search, permissionAny: [PERMISSIONS.VIEW_PURCHASE_INVOICES, PERMISSIONS.CREATE_PURCHASE_INVOICES, PERMISSIONS.EDIT_PURCHASE_INVOICES] },
       { name: 'Products by Supplier', href: '/purchase-by-supplier', icon: BarChart3, permission: PERMISSIONS.VIEW_REPORTS },
     ]
   },
@@ -209,18 +226,28 @@ const SidebarItem = ({ item, isActivePath, sidebarConfig, level = 0, categoryTre
     }
   }, [item, isActivePath, hasChildren]);
 
+  const canViewItem = (target) => {
+    if (target.permissionAny?.length) {
+      return target.permissionAny.some((permissionKey) => hasPermission(user, permissionKey));
+    }
+    if (target.permission) {
+      return hasPermission(user, target.permission);
+    }
+    return true;
+  };
+
   // Check visibility based on config
   if (sidebarConfig && sidebarConfig[item.name] === false) return null;
 
   // Check visibility based on RBAC permissions
-  if (item.permission && !hasPermission(user, item.permission)) return null;
+  if (!canViewItem(item)) return null;
 
   // If group, check if any child is visible
   if (hasChildren) {
     const hasVisibleChild = item.children.some(child => {
       // Must pass both sidebarConfig and RBAC permission check
       const configVisible = sidebarConfig?.[child.name] !== false;
-      const permissionVisible = !child.permission || hasPermission(user, child.permission);
+      const permissionVisible = canViewItem(child);
       return configVisible && permissionVisible;
     });
     if (!hasVisibleChild) return null;
@@ -369,22 +396,34 @@ const CategoryTreeItem = ({ category, subcategories, isActive, level = 0 }) => {
 
 export const Layout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { user, logout } = useAuth();
+  const { user, logout, isLoggingOut } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const { isMobile } = useResponsive();
 
   // Sidebar visibility state (keys align with MultiTabLayout / Settings; migration in loadSidebarConfig)
   const [sidebarConfig, setSidebarConfig] = useState(() => loadSidebarConfig());
+  const [showTopBar, setShowTopBar] = useState(() => {
+    const saved = localStorage.getItem('showTopBarUI');
+    return saved === null ? true : saved === 'true';
+  });
 
   // Listener for sidebar configuration changes
   useEffect(() => {
     const handleSidebarChange = () => {
       setSidebarConfig(loadSidebarConfig());
     };
+    const handleTopBarVisibilityChange = () => {
+      const saved = localStorage.getItem('showTopBarUI');
+      setShowTopBar(saved === null ? true : saved === 'true');
+    };
 
     window.addEventListener('sidebarConfigChanged', handleSidebarChange);
-    return () => window.removeEventListener('sidebarConfigChanged', handleSidebarChange);
+    window.addEventListener('topBarVisibilityChanged', handleTopBarVisibilityChange);
+    return () => {
+      window.removeEventListener('sidebarConfigChanged', handleSidebarChange);
+      window.removeEventListener('topBarVisibilityChanged', handleTopBarVisibilityChange);
+    };
   }, []);
 
   const { data: categoryTreeRaw, isLoading: categoriesLoading, refetch: refetchCategories } = useGetCategoryTreeQuery(
@@ -397,20 +436,19 @@ export const Layout = ({ children }) => {
     return adaptApiCategoryTreeForSidebar(roots);
   }, [categoryTreeRaw]);
 
-  const handleLogout = () => {
-    logout();
-    toast.success('Logged out successfully');
+  const handleLogout = async () => {
+    await logout();
   };
 
   const isActivePath = (path) => location.pathname === path;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-[100dvh] bg-gray-50">
       {/* Mobile Navigation */}
-      <MobileNavigation user={user} onLogout={handleLogout} />
+      <MobileNavigation user={user} onLogout={handleLogout} isLoggingOut={isLoggingOut} />
 
       {/* Mobile sidebar */}
-      <div className={`fixed inset-0 z-50 lg:hidden ${sidebarOpen ? 'block' : 'hidden'}`}>
+      <div className={`fixed inset-0 z-[60] lg:hidden ${sidebarOpen ? 'block' : 'hidden'}`}>
         <div className="fixed inset-0 bg-gray-600 bg-opacity-75" onClick={() => setSidebarOpen(false)} />
         <div className="fixed inset-y-0 left-0 flex w-64 flex-col bg-white shadow-xl">
           <div className="flex h-16 items-center justify-between px-4 border-b border-gray-100">
@@ -422,7 +460,7 @@ export const Layout = ({ children }) => {
               <X className="h-6 w-6" />
             </button>
           </div>
-          <nav className="flex-1 space-y-1 px-3 py-4 overflow-y-auto max-h-[calc(100vh-4rem)] scrollbar-thin scrollbar-thumb-gray-200">
+          <nav className="flex-1 space-y-1 px-3 py-4 overflow-y-auto max-h-[calc(100dvh-4rem)] scrollbar-thin scrollbar-thumb-gray-200">
             {navigation.map((item) => (
               <SidebarItem
                 key={item.name}
@@ -445,7 +483,7 @@ export const Layout = ({ children }) => {
           <div className="flex h-16 items-center px-6 border-b border-gray-100">
             <h1 className="text-xl font-bold text-gray-900">POS System</h1>
           </div>
-          <nav className="flex-1 space-y-1 px-3 py-6 overflow-y-auto max-h-[calc(100vh-4rem)] scrollbar-thin scrollbar-thumb-gray-200">
+          <nav className="flex-1 space-y-1 px-3 py-6 overflow-y-auto max-h-[calc(100dvh-4rem)] scrollbar-thin scrollbar-thumb-gray-200">
             {navigation.map((item) => (
               <SidebarItem
                 key={item.name}
@@ -465,7 +503,8 @@ export const Layout = ({ children }) => {
       {/* Main content */}
       <div className="lg:pl-64">
         {/* Top bar */}
-        <div className="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-x-4 border-b border-gray-200 bg-white px-4 shadow-sm sm:gap-x-6 sm:px-6 lg:px-8">
+        {showTopBar && (
+          <div className="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-x-4 border-b border-gray-200 bg-white px-4 shadow-sm sm:gap-x-6 sm:px-6 lg:px-8">
           <button
             type="button"
             className="-m-2.5 p-2.5 text-gray-700 lg:hidden"
@@ -547,8 +586,12 @@ export const Layout = ({ children }) => {
                   </div>
                 </div>
                 <button
-                  onClick={logout}
-                  className="text-gray-400 hover:text-gray-600"
+                  onClick={() => {
+                    if (isLoggingOut) return;
+                    logout();
+                  }}
+                  disabled={isLoggingOut}
+                  className="text-gray-400 hover:text-gray-600 disabled:opacity-60 disabled:cursor-not-allowed"
                   title="Logout"
                 >
                   <LogOut className="h-5 w-5" />
@@ -556,7 +599,8 @@ export const Layout = ({ children }) => {
               </div>
             </div>
           </div>
-        </div>
+          </div>
+        )}
 
         {/* Page content */}
         <main className={`${isMobile ? 'py-2' : 'py-4'} overflow-x-hidden max-w-full`}>

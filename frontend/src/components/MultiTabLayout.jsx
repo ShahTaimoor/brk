@@ -43,7 +43,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { PERMISSIONS } from '../config/rbacConfig';
+import { canAccessRoute, getRouteAccess } from '../config/routeAccess';
 import { useTab } from '../contexts/TabContext';
 import { getComponentInfo } from '../utils/componentUtils';
 import TabBar from './TabBar';
@@ -78,7 +78,33 @@ function DatabaseIcon(props) {
   )
 }
 
-export const navigation = [
+const withRouteAccess = (items) => {
+  return items.map((item) => {
+    const next = { ...item };
+
+    if (item.href) {
+      const access = getRouteAccess(item.href);
+      if (access) {
+        if (Object.prototype.hasOwnProperty.call(access, 'permission')) {
+          next.permission = access.permission;
+        }
+        if (Object.prototype.hasOwnProperty.call(access, 'permissionAny')) {
+          next.permissionAny = access.permissionAny;
+        } else {
+          delete next.permissionAny;
+        }
+      }
+    }
+
+    if (item.children?.length) {
+      next.children = withRouteAccess(item.children);
+    }
+
+    return next;
+  });
+};
+
+export const navigation = withRouteAccess([
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, permission: 'view_dashboard', allowMultiple: true },
 
   {
@@ -120,11 +146,12 @@ export const navigation = [
     icon: Wallet,
     permission: 'view_reports',
     children: [
-      { name: 'Cash Receipts', href: '/cash-receipts', icon: Receipt, permission: 'view_reports' },
-      { name: 'Cash Payments', href: '/cash-payments', icon: CreditCard, permission: 'view_reports' },
-      { name: 'Bank Receipts', href: '/bank-receipts', icon: Building, permission: 'view_reports' },
-      { name: 'Bank Payments', href: '/bank-payments', icon: ArrowUpDown, permission: 'view_reports' },
-      { name: 'Record Expense', href: '/expenses', icon: Wallet, permission: 'view_reports' },
+      { name: 'Cash Receiving', href: '/cash-receiving', icon: Receipt, permission: 'view_accounting' },
+      { name: 'Cash Receipts', href: '/cash-receipts', icon: Receipt, permission: 'view_cash_receipts' },
+      { name: 'Cash Payments', href: '/cash-payments', icon: CreditCard, permission: 'view_cash_payments' },
+      { name: 'Bank Receipts', href: '/bank-receipts', icon: Building, permission: 'view_bank_receipts' },
+      { name: 'Bank Payments', href: '/bank-payments', icon: ArrowUpDown, permission: 'view_bank_payments' },
+      { name: 'Record Expense', href: '/expenses', icon: Wallet, permission: 'view_expenses' },
     ]
   },
 
@@ -165,8 +192,8 @@ export const navigation = [
     permission: 'view_chart_of_accounts',
     children: [
       { name: 'Chart of Accounts', href: '/chart-of-accounts', icon: FolderTree, permission: 'view_chart_of_accounts' },
-      { name: 'Journal Vouchers', href: '/journal-vouchers', icon: FileText, permission: 'view_reports', allowMultiple: true },
-      { name: 'Account Ledger Summary', href: '/account-ledger', icon: FileText, permission: 'view_reports', allowMultiple: true },
+      { name: 'Journal Vouchers', href: '/journal-vouchers', icon: FileText, permission: 'view_accounting_transactions', allowMultiple: true },
+      { name: 'Account Ledger Summary', href: '/account-ledger', icon: FileText, permission: 'view_accounting_summary', allowMultiple: true },
     ]
   },
 
@@ -202,7 +229,7 @@ export const navigation = [
       { name: 'Help', href: '/help', icon: HelpCircle, permission: null },
     ]
   }
-];
+]);
 
 /** Migrate legacy parent-only sidebar keys to per-child keys (see Settings → Sidebar). */
 export function migrateSidebarConfig(parsed) {
@@ -271,6 +298,19 @@ const sidebarHeaderColors = {
 };
 const getHeaderColors = (name) => sidebarHeaderColors[name] || { bg: 'bg-slate-50', hover: 'hover:bg-slate-100', border: 'border-slate-200' };
 const defaultOpenSections = ['Sales', 'Purchase', 'Operations'];
+const isItemPermitted = (item, user, hasPermission) => {
+  if (!item) return false;
+  if (item.href) {
+    return canAccessRoute(item.href, user, hasPermission);
+  }
+  if (user?.role === 'admin') return true;
+  if (item.permissionAny?.length) {
+    return item.permissionAny.some((permissionKey) => hasPermission(permissionKey));
+  }
+  if (!item.permission) return true;
+  return hasPermission(item.permission);
+};
+
 const SidebarItem = ({ item, isActivePath, sidebarConfig, user, hasPermission, onNavigate, level = 0 }) => {
   const hasChildren = item.children && item.children.length > 0;
   const [isOpen, setIsOpen] = useState(hasChildren && defaultOpenSections.includes(item.name));
@@ -285,14 +325,14 @@ const SidebarItem = ({ item, isActivePath, sidebarConfig, user, hasPermission, o
 
   // Check visibility and permission
   if (sidebarConfig && sidebarConfig[item.name] === false) return null;
-  const isPermitted = !item.permission || user?.role === 'admin' || hasPermission(item.permission);
+  const isPermitted = isItemPermitted(item, user, hasPermission);
   if (!isPermitted) return null;
 
   // If group, check if any child is visible/permitted
   if (hasChildren) {
     const hasVisibleChild = item.children.some(child => {
       const childVisible = sidebarConfig?.[child.name] !== false;
-      const childPermitted = !child.permission || user?.role === 'admin' || hasPermission(child.permission);
+      const childPermitted = isItemPermitted(child, user, hasPermission);
       return childVisible && childPermitted;
     });
     if (!hasVisibleChild) return null;
@@ -390,7 +430,7 @@ export const MultiTabLayout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef(null);
-  const { user, logout, hasPermission } = useAuth();
+  const { user, logout, hasPermission, isLoggingOut } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const { isMobile, isTablet } = useResponsive();
@@ -412,15 +452,27 @@ export const MultiTabLayout = ({ children }) => {
 
   // Sidebar visibility state
   const [sidebarConfig, setSidebarConfig] = useState(() => loadSidebarConfig());
+  const [showTopBar, setShowTopBar] = useState(() => {
+    const saved = localStorage.getItem('showTopBarUI');
+    return saved === null ? true : saved === 'true';
+  });
 
   // Listener for sidebar configuration changes
   useEffect(() => {
     const handleSidebarChange = () => {
       setSidebarConfig(loadSidebarConfig());
     };
+    const handleTopBarVisibilityChange = () => {
+      const saved = localStorage.getItem('showTopBarUI');
+      setShowTopBar(saved === null ? true : saved === 'true');
+    };
 
     window.addEventListener('sidebarConfigChanged', handleSidebarChange);
-    return () => window.removeEventListener('sidebarConfigChanged', handleSidebarChange);
+    window.addEventListener('topBarVisibilityChanged', handleTopBarVisibilityChange);
+    return () => {
+      window.removeEventListener('sidebarConfigChanged', handleSidebarChange);
+      window.removeEventListener('topBarVisibilityChanged', handleTopBarVisibilityChange);
+    };
   }, []);
 
   // Get alert summary for mobile bottom navbar
@@ -468,7 +520,7 @@ export const MultiTabLayout = ({ children }) => {
 
     if (currentNavItem && currentNavItem.name) {
       const isVisible = sidebarConfig[currentNavItem.name] !== false;
-      const isPermitted = !currentNavItem.permission || user?.role === 'admin' || hasPermission(currentNavItem.permission);
+      const isPermitted = isItemPermitted(currentNavItem, user, hasPermission);
 
       if (!isVisible || !isPermitted) {
         // Find the first visible and permitted page
@@ -476,7 +528,7 @@ export const MultiTabLayout = ({ children }) => {
           if (!item.href || !item.name) return false;
           if (item.children && item.children.length > 0) return false; // Skip groups
           const v = sidebarConfig[item.name] !== false;
-          const p = !item.permission || user?.role === 'admin' || hasPermission(item.permission);
+          const p = isItemPermitted(item, user, hasPermission);
           return v && p;
         });
 
@@ -489,9 +541,8 @@ export const MultiTabLayout = ({ children }) => {
   }, [location.pathname, sidebarConfig, flattenedNavigation, user, hasPermission, navigate]);
 
 
-  const handleLogout = () => {
-    logout();
-    toast.success('Logged out successfully');
+  const handleLogout = async () => {
+    await logout();
   };
 
   const reuseNavigationPaths = new Set([
@@ -570,12 +621,12 @@ export const MultiTabLayout = ({ children }) => {
   }, [userMenuOpen]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-[100dvh] bg-gray-50">
       {/* Mobile Navigation */}
-      <MobileNavigation user={user} onLogout={handleLogout} />
+      <MobileNavigation user={user} onLogout={handleLogout} isLoggingOut={isLoggingOut} />
 
       {/* Mobile sidebar */}
-      <div className={`fixed inset-0 z-50 lg:hidden ${sidebarOpen ? 'block' : 'hidden'}`}>
+      <div className={`fixed inset-0 z-[60] lg:hidden ${sidebarOpen ? 'block' : 'hidden'}`}>
         <div className="fixed inset-0 bg-gray-600 bg-opacity-75" onClick={() => setSidebarOpen(false)} />
         <div className="fixed inset-y-0 left-0 flex w-64 flex-col bg-white shadow-xl">
           <div className="flex h-16 items-center justify-between px-4 border-b border-gray-100">
@@ -587,7 +638,7 @@ export const MultiTabLayout = ({ children }) => {
               <X className="h-6 w-6" />
             </button>
           </div>
-          <nav className="flex-1 space-y-1 px-3 py-4 overflow-y-auto max-h-[calc(100vh-4rem)] scrollbar-thin scrollbar-thumb-gray-200">
+          <nav className="flex-1 space-y-1 px-3 py-4 overflow-y-auto max-h-[calc(100dvh-4rem)] scrollbar-thin scrollbar-thumb-gray-200">
             {navigation.map((item) => (
               <SidebarItem
                 key={item.name}
@@ -612,7 +663,7 @@ export const MultiTabLayout = ({ children }) => {
           <div className="flex h-16 items-center px-6 border-b border-gray-100">
             <h1 className="text-xl font-bold text-gray-900">POS System</h1>
           </div>
-          <nav className="flex-1 space-y-1 px-3 py-6 overflow-y-auto max-h-[calc(100vh-4rem)] scrollbar-thin scrollbar-thumb-gray-200">
+          <nav className="flex-1 space-y-1 px-3 py-6 overflow-y-auto max-h-[calc(100dvh-4rem)] scrollbar-thin scrollbar-thumb-gray-200">
             {navigation.map((item) => (
               <SidebarItem
                 key={item.name}
@@ -631,7 +682,8 @@ export const MultiTabLayout = ({ children }) => {
       {/* Main content */}
       <div className="lg:pl-64">
         {/* Top bar - Professional Design with Solid White Background */}
-        <div className="sticky top-0 z-40 flex h-16 shrink-0 items-center border-b border-gray-200 bg-white px-3 sm:px-4 lg:px-6 shadow-sm overflow-visible">
+        {showTopBar && (
+          <div className="sticky top-0 z-40 flex h-16 shrink-0 items-center border-b border-gray-200 bg-white px-3 sm:px-4 lg:px-6 shadow-sm overflow-visible">
           {/* Mobile Menu Button */}
           <button
             type="button"
@@ -645,7 +697,7 @@ export const MultiTabLayout = ({ children }) => {
           <div className="flex flex-1 items-center gap-2 sm:gap-3 lg:gap-4 min-w-0">
             {/* Mobile Top Bar Buttons - Cash Receiving and Record Expense */}
             <div className="flex-shrink-0 lg:hidden flex items-center gap-2">
-              {sidebarConfig['Cash Receipts'] !== false && (
+              {sidebarConfig['Cash Receipts'] !== false && isItemPermitted({ permission: 'view_cash_receipts' }, user, hasPermission) && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/cash-receipts', name: 'Cash Receipts' })}
                   className="bg-green-600 hover:bg-green-700 text-white px-2.5 py-2 rounded-md shadow-sm hover:shadow-md transition-all duration-200 flex items-center gap-1.5 text-xs font-medium whitespace-nowrap"
@@ -654,7 +706,7 @@ export const MultiTabLayout = ({ children }) => {
                   <span>Receiving</span>
                 </button>
               )}
-              {sidebarConfig['Record Expense'] !== false && (
+              {sidebarConfig['Record Expense'] !== false && isItemPermitted({ permission: 'view_expenses' }, user, hasPermission) && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/expenses', name: 'Record Expense' })}
                   className="bg-red-500 hover:bg-red-600 text-white px-2.5 py-2 rounded-md shadow-sm hover:shadow-md transition-all duration-200 flex items-center gap-1.5 text-xs font-medium whitespace-nowrap"
@@ -667,16 +719,18 @@ export const MultiTabLayout = ({ children }) => {
 
             {/* Action Buttons - Shrink when zoom/screen percentage increases (responsive) */}
             <div className="hidden lg:flex items-center gap-1 xl:gap-1.5 2xl:gap-2 overflow-x-auto flex-1 min-w-0 scrollbar-hide overflow-y-visible">
-              <button
-                onClick={() => handleNavigationClick({ href: '/cash-receiving', name: 'Cash Receiving' })}
-                className="bg-teal-50 text-teal-700 border border-teal-200 hover:bg-teal-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
-              >
-                <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-teal-200/60 flex-shrink-0">
-                  <Receipt className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-teal-700" />
-                </span>
-                <span>Multiple Cash Receipt</span>
-              </button>
-              {sidebarConfig['Cash Receipts'] !== false && (
+              {sidebarConfig['Cash Receiving'] !== false && isItemPermitted({ permission: 'view_accounting' }, user, hasPermission) && (
+                <button
+                  onClick={() => handleNavigationClick({ href: '/cash-receiving', name: 'Cash Receiving' })}
+                  className="bg-teal-50 text-teal-700 border border-teal-200 hover:bg-teal-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
+                >
+                  <span className="inline-flex items-center justify-center w-5 h-5 xl:w-6 xl:h-6 rounded bg-teal-200/60 flex-shrink-0">
+                    <Receipt className="h-2.5 w-2.5 xl:h-3.5 xl:w-3.5 text-teal-700" />
+                  </span>
+                  <span>Multiple Cash Receipt</span>
+                </button>
+              )}
+              {sidebarConfig['Cash Receipts'] !== false && isItemPermitted({ permission: 'view_cash_receipts' }, user, hasPermission) && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/cash-receipts', name: 'Cash Receipts' })}
                   className="bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
@@ -688,7 +742,7 @@ export const MultiTabLayout = ({ children }) => {
                   <span className="sm:hidden">Cash R.</span>
                 </button>
               )}
-              {sidebarConfig['Bank Receipts'] !== false && (
+              {sidebarConfig['Bank Receipts'] !== false && isItemPermitted({ permission: 'view_bank_receipts' }, user, hasPermission) && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/bank-receipts', name: 'Bank Receipts' })}
                   className="bg-cyan-50 text-cyan-700 border border-cyan-200 hover:bg-cyan-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
@@ -700,7 +754,7 @@ export const MultiTabLayout = ({ children }) => {
                   <span className="sm:hidden">Bank R.</span>
                 </button>
               )}
-              {sidebarConfig['Cash Payments'] !== false && (
+              {sidebarConfig['Cash Payments'] !== false && isItemPermitted({ permission: 'view_cash_payments' }, user, hasPermission) && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/cash-payments', name: 'Cash Payments' })}
                   className="bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
@@ -712,7 +766,7 @@ export const MultiTabLayout = ({ children }) => {
                   <span className="sm:hidden">Cash P.</span>
                 </button>
               )}
-              {sidebarConfig['Bank Payments'] !== false && (
+              {sidebarConfig['Bank Payments'] !== false && isItemPermitted({ permission: 'view_bank_payments' }, user, hasPermission) && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/bank-payments', name: 'Bank Payments' })}
                   className="bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
@@ -724,7 +778,7 @@ export const MultiTabLayout = ({ children }) => {
                   <span className="sm:hidden">Bank P.</span>
                 </button>
               )}
-              {sidebarConfig['Record Expense'] !== false && (
+              {sidebarConfig['Record Expense'] !== false && isItemPermitted({ permission: 'view_expenses' }, user, hasPermission) && (
                 <button
                   onClick={() => handleNavigationClick({ href: '/expenses', name: 'Record Expense' })}
                   className="bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 px-2 py-1.5 xl:px-3 xl:py-2 rounded-md shadow-sm transition-all duration-200 flex items-center gap-1 xl:gap-1.5 text-[10px] xl:text-xs 2xl:text-sm font-medium flex-shrink-0 whitespace-nowrap min-w-0"
@@ -742,7 +796,7 @@ export const MultiTabLayout = ({ children }) => {
             {/* User Profile Section - Right Aligned with Dropdown */}
             <div className="relative flex items-center gap-2 sm:gap-3 ml-auto flex-shrink-0 overflow-visible" ref={userMenuRef}>
               {/* Alerts Button - Right side, left of Admin user */}
-              {sidebarConfig['Inventory Alerts'] !== false && (
+              {sidebarConfig['Inventory Alerts'] !== false && isItemPermitted({ permission: 'view_inventory' }, user, hasPermission) && (
                 <div className="flex-shrink-0">
                   <InventoryAlertsBadge onNavigate={handleNavigationClick} />
                 </div>
@@ -774,34 +828,39 @@ export const MultiTabLayout = ({ children }) => {
                     )}
                   </div>
                   <div className="py-1">
+                    {isItemPermitted({ permission: 'manage_users' }, user, hasPermission) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleNavigationClick({ href: '/settings2', name: 'Settings' });
+                          setUserMenuOpen(false);
+                        }}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2 transition-colors"
+                      >
+                        <Settings className="h-4 w-4 flex-shrink-0" />
+                        <span>Settings</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
-                        handleNavigationClick({ href: '/settings2', name: 'Settings' });
-                        setUserMenuOpen(false);
-                      }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2 transition-colors"
-                    >
-                      <Settings className="h-4 w-4 flex-shrink-0" />
-                      <span>Settings</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
+                        if (isLoggingOut) return;
                         setUserMenuOpen(false);
                         handleLogout();
                       }}
+                      disabled={isLoggingOut}
                       className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors"
                     >
                       <LogOut className="h-4 w-4 flex-shrink-0" />
-                      <span>Logout</span>
+                      <span>{isLoggingOut ? 'Logging out...' : 'Logout'}</span>
                     </button>
                   </div>
                 </div>
               )}
             </div>
           </div>
-        </div>
+          </div>
+        )}
 
         {/* Tab Bar */}
         <TabBar />

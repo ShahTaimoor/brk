@@ -4,13 +4,14 @@ import { Camera, Image as ImageIcon, X } from 'lucide-react';
 import { LoadingButton } from './LoadingSpinner';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import { useUploadProductImageMutation } from '../store/services/productsApi';
 
 export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, allProducts = [], onEditExisting, categories = [], showCostPrice = true }) => {
   const showImages = localStorage.getItem('showProductImagesUI') !== 'false';
   const [showHsCodeField, setShowHsCodeField] = useState(
     () => localStorage.getItem('showProductHsCodeColumn') !== 'false'
   );
-  const [imageUploading, setImageUploading] = useState(false);
+  const [uploadImage, { isLoading: imageUploading }] = useUploadProductImageMutation();
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -21,7 +22,8 @@ export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, a
     pricing: {
       cost: '',
       retail: '',
-      wholesale: ''
+      wholesale: '',
+      lastSale: ''
     },
     inventory: {
       currentStock: '',
@@ -47,6 +49,11 @@ export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, a
   const handleChange = useCallback((event) => {
     const { name, value, type, checked } = event.target;
     let fieldValue = type === 'checkbox' ? checked : value;
+
+    // Standardize barcode and SKU separators as per scanner best practices (+ and * are risky)
+    if ((name === 'barcode' || name === 'sku') && typeof fieldValue === 'string') {
+      fieldValue = fieldValue.replace(/[+*]/g, '-');
+    }
 
     if (name.includes('.')) {
       const [parent, child] = name.split('.');
@@ -136,30 +143,33 @@ export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, a
     const file = event.target.files?.[0];
     if (!file) return;
 
-    setImageUploading(true);
+    // Validate file size (10MB limit)
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('File is too large. Max size is 10MB.');
+      return;
+    }
+
     const form = new FormData();
     form.append('image', file);
 
     try {
-      const response = await fetch('/api/images/upload', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token')}`
-        },
-        body: form
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message || 'Image upload failed');
-
-      setFormData(prev => ({
-        ...prev,
-        imageUrl: data.urls.optimized
-      }));
-      toast.success('Image uploaded successfully');
+      const response = await uploadImage(form).unwrap();
+      
+      if (response.success && response.data?.urls?.optimized) {
+        setFormData(prev => ({
+          ...prev,
+          imageUrl: response.data.urls.optimized
+        }));
+        toast.success('Image uploaded successfully');
+      } else {
+        throw new Error('Image upload failed: Invalid response from server');
+      }
     } catch (error) {
-      toast.error(error.message || 'Failed to upload image');
+      console.error('Upload Error:', error);
+      toast.error(error.data?.message || error.message || 'Failed to upload image');
     } finally {
-      setImageUploading(false);
+      // Reset file input
+      event.target.value = '';
     }
   };
 
@@ -170,6 +180,10 @@ export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, a
       newErrors.name = 'Product name is required';
     } else if (formData.name.length < 2) {
       newErrors.name = 'Product name must be at least 2 characters';
+    }
+
+    if (!formData.pricing.cost || formData.pricing.cost === '') {
+      newErrors.cost = 'Cost price is required';
     }
 
     // Validate price hierarchy (only show toast if not already shown)
@@ -241,7 +255,8 @@ export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, a
       pricing: {
         cost: newData.pricing?.cost || '',
         retail: newData.pricing?.retail || '',
-        wholesale: newData.pricing?.wholesale || ''
+        wholesale: newData.pricing?.wholesale || '',
+        lastSale: newData.pricing?.lastSale || 0
       },
       inventory: {
         currentStock: newData.inventory?.currentStock || '',
@@ -338,7 +353,7 @@ export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, a
                 <div className="relative border-2 border-dashed border-gray-300 rounded-md bg-gray-50 flex items-center justify-center overflow-hidden h-[120px] xl:h-[150px] group">
                   {formData.imageUrl ? (
                     <>
-                      <img src={formData.imageUrl} alt="Product" className="object-cover w-full h-full" />
+                      <img src={formData.imageUrl} alt="Product" crossOrigin="anonymous" className="object-cover w-full h-full" />
                       <button
                         type="button"
                         onClick={() => setFormData(prev => ({ ...prev, imageUrl: '' }))}
@@ -531,8 +546,11 @@ export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, a
                   onChange={handleChange}
                   onBlur={handleBlur}
                   placeholder="0.00"
-                  className="w-full px-2 py-1.5 sm:px-3 sm:py-2 text-sm border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 min-h-[2rem] sm:min-h-0"
+                  className={`w-full px-2 py-1.5 sm:px-3 sm:py-2 text-sm border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 min-h-[2rem] sm:min-h-0 ${errors.cost ? 'border-red-300' : 'border-gray-300'}`}
                 />
+                {errors.cost && (
+                  <p className="mt-0.5 sm:mt-1 text-xs text-red-600">{errors.cost}</p>
+                )}
                 <p className="mt-0.5 sm:mt-1 text-[10px] sm:text-xs text-gray-500">Product cost</p>
               </div>
             )}
@@ -569,6 +587,20 @@ export const ProductModal = ({ product, isOpen, onClose, onSave, isSubmitting, a
                 className="w-full px-2 py-1.5 sm:px-3 sm:py-2 text-sm border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 min-h-[2rem] sm:min-h-0"
               />
               <p className="mt-0.5 sm:mt-1 text-[10px] sm:text-xs text-gray-500">Wholesale price</p>
+            </div>
+            <div>
+              <label htmlFor="pricing.lastSale" className="block text-xs sm:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">
+                Last Sale Price
+              </label>
+              <input
+                id="pricing.lastSale"
+                name="pricing.lastSale"
+                type="number"
+                value={formData.pricing.lastSale || 0}
+                readOnly
+                className="w-full px-2 py-1.5 sm:px-3 sm:py-2 text-sm border border-gray-200 bg-gray-50 text-gray-500 rounded-md shadow-sm focus:outline-none min-h-[2rem] sm:min-h-0 cursor-not-allowed"
+              />
+              <p className="mt-0.5 sm:mt-1 text-[10px] sm:text-xs text-gray-500">Read-only tracking</p>
             </div>
             <div>
               <label htmlFor="inventory.currentStock" className="block text-xs sm:text-sm font-medium text-gray-700 mb-0.5 sm:mb-1">

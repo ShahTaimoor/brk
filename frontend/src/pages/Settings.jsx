@@ -35,6 +35,8 @@ import { toast } from 'sonner';
 import {
   useGetCompanySettingsQuery,
   useUpdateCompanySettingsMutation,
+  useGetUserPreferencesQuery,
+  useUpdateUserPreferencesMutation,
 } from '../store/services/settingsApi';
 import { useFetchCompanyQuery } from '../store/services/companyApi';
 import {
@@ -128,9 +130,14 @@ export const Settings2 = () => {
     showPrintPaymentStatus: true,
     showPrintPaymentMethod: true,
     showPrintPaymentAmount: true,
+    showPrintLedgerBalance: true,
+    autoPrintAfterSale: true,
+    autoCompleteSaleAfterPrint: true,
     mobilePrintPreview: false,
+    printSize: 'standard',
     headerText: '',
     footerText: '',
+    receiptFooterText: '',
     invoiceLayout: 'standard',
     logoSize: 100
   });
@@ -678,6 +685,25 @@ export const Settings2 = () => {
       view_reports: true,
       view_pl_statements: true, view_balance_sheets: true, view_general_reports: true
     },
+    sales_person: {
+      // Sales Person - sales and purchase transaction workflow only
+      create_sales_orders: true,
+      edit_sales_orders: true,
+      create_orders: true,
+      edit_orders: true,
+      create_sales_invoices: true,
+      edit_sales_invoices: true,
+      create_purchase_orders: true,
+      edit_purchase_orders: true,
+      create_purchase_invoices: true,
+      edit_purchase_invoices: true,
+      // View permissions so allowed pages/modules are visible
+      view_orders: true,
+      view_sales_orders: true,
+      view_sales_invoices: true,
+      view_purchase_orders: true,
+      view_purchase_invoices: true
+    },
     employee: {
       view_sales: true,
       manage_sales: true
@@ -702,10 +728,14 @@ export const Settings2 = () => {
 
   // Fetch company settings
   const { data: settingsResponse, isLoading: companyLoading, refetch: refetchSettings } = useGetCompanySettingsQuery();
+  const { data: userPreferencesResponse } = useGetUserPreferencesQuery();
   const { data: companyApiResponse } = useFetchCompanyQuery();
   const [updateCompanySettings] = useUpdateCompanySettingsMutation();
+  const [updateUserPreferences, { isLoading: isSavingUserPreferences }] = useUpdateUserPreferencesMutation();
   const settings = settingsResponse?.data || settingsResponse;
+  const userPreferences = userPreferencesResponse?.data || userPreferencesResponse || {};
   const companyProfile = companyApiResponse?.data || {};
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
 
   // Map settings data to component state
   useEffect(() => {
@@ -745,10 +775,15 @@ export const Settings2 = () => {
           showPrintPaymentStatus: settings.printSettings.showPrintPaymentStatus ?? true,
           showPrintPaymentMethod: settings.printSettings.showPrintPaymentMethod ?? true,
           showPrintPaymentAmount: settings.printSettings.showPrintPaymentAmount ?? true,
+          showPrintLedgerBalance: settings.printSettings.showPrintLedgerBalance ?? true,
+          autoPrintAfterSale: settings.printSettings.autoPrintAfterSale ?? true,
+          autoCompleteSaleAfterPrint: settings.printSettings.autoCompleteSaleAfterPrint ?? true,
           mobilePrintPreview: settings.printSettings.mobilePrintPreview ?? false,
+          invoiceLayout: settings.printSettings.invoiceLayout || 'standard',
+          printSize: (settings.printSettings.invoiceLayout || 'standard') === 'compact' ? '80mm' : 'standard',
           headerText: settings.printSettings.headerText || '',
           footerText: settings.printSettings.footerText || '',
-          invoiceLayout: settings.printSettings.invoiceLayout || 'standard'
+          receiptFooterText: settings.printSettings.receiptFooterText || ''
         }));
       }
     }
@@ -864,9 +899,13 @@ export const Settings2 = () => {
           showPrintPaymentStatus: ps.showPrintPaymentStatus ?? true,
           showPrintPaymentMethod: ps.showPrintPaymentMethod ?? true,
           showPrintPaymentAmount: ps.showPrintPaymentAmount ?? true,
+          showPrintLedgerBalance: ps.showPrintLedgerBalance ?? true,
+          autoPrintAfterSale: ps.autoPrintAfterSale ?? true,
+          autoCompleteSaleAfterPrint: ps.autoCompleteSaleAfterPrint ?? true,
           mobilePrintPreview: ps.mobilePrintPreview ?? prev.mobilePrintPreview ?? false,
           headerText: ps.headerText || prev.headerText || '',
           footerText: ps.footerText || prev.footerText || '',
+          receiptFooterText: ps.receiptFooterText || prev.receiptFooterText || '',
           invoiceLayout: ps.invoiceLayout || prev.invoiceLayout || 'standard',
           logoSize: ps.logoSize ?? prev.logoSize ?? 100
         };
@@ -921,6 +960,21 @@ export const Settings2 = () => {
       handleApiError(error, 'Company Information Update');
     } finally {
       setSavingCompanySettings(false);
+    }
+  };
+
+  useEffect(() => {
+    setTwoFactorEnabled(!!userPreferences?.twoFactorEnabled);
+  }, [userPreferences?.twoFactorEnabled]);
+
+  const handleToggleTwoFactor = async (checked) => {
+    setTwoFactorEnabled(!!checked);
+    try {
+      await updateUserPreferences({ twoFactorEnabled: !!checked }).unwrap();
+      toast.success(`Two-factor authentication ${checked ? 'enabled' : 'disabled'} successfully`);
+    } catch (error) {
+      setTwoFactorEnabled(!checked);
+      handleApiError(error, 'Update 2FA Setting');
     }
   };
 
@@ -1164,12 +1218,22 @@ export const Settings2 = () => {
     }
   };
 
-  const handlePermissionChange = (permissionKey, isChecked) => {
+  const handlePermissionChange = (permissionKey, isChecked, subcategoryKeys = []) => {
+    const permissionUpdates = {
+      [permissionKey]: isChecked
+    };
+
+    if (subcategoryKeys.length > 0) {
+      subcategoryKeys.forEach((subcategoryKey) => {
+        permissionUpdates[subcategoryKey] = isChecked;
+      });
+    }
+
     setNewUserData(prev => ({
       ...prev,
       permissions: {
         ...prev.permissions,
-        [permissionKey]: isChecked
+        ...permissionUpdates
       }
     }));
 
@@ -1179,7 +1243,7 @@ export const Settings2 = () => {
         ...prev,
         [newUserData.role]: {
           ...prev[newUserData.role],
-          [permissionKey]: isChecked
+          ...permissionUpdates
         }
       }));
     }
@@ -1187,10 +1251,17 @@ export const Settings2 = () => {
 
   const handlePrintSettingsChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setPrintSettings(prev => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : (type === 'number' || type === 'range' ? Number(value) : value)
-    }));
+    const raw = type === 'checkbox' ? checked : (type === 'number' || type === 'range' ? Number(value) : value);
+    setPrintSettings(prev => {
+      const next = { ...prev, [name]: raw };
+      if (name === 'invoiceLayout') {
+        next.printSize = raw === 'compact' ? '80mm' : 'standard';
+      }
+      if (name === 'printSize' && raw === '80mm') {
+        next.invoiceLayout = 'compact';
+      }
+      return next;
+    });
   };
 
   const resetNewUserForm = () => {
@@ -1340,13 +1411,18 @@ export const Settings2 = () => {
     return saved === null ? true : saved === 'true';
   });
 
+  const [showTopBarUI, setShowTopBarUI] = useState(() => {
+    const saved = localStorage.getItem('showTopBarUI');
+    return saved === null ? true : saved === 'true';
+  });
+
   const tabs = [
     { id: 'company', name: 'Company Information', shortName: 'Company', icon: Building },
-    { id: 'users', name: 'Users Control', shortName: 'Users', icon: Users },
+    { id: 'users', name: 'Users', shortName: 'Users', icon: Users },
     { id: 'print', name: 'Print Preview Settings', shortName: 'Print', icon: Printer },
     { id: 'sidebar', name: 'Sidebar Configuration', shortName: 'Sidebar', icon: LayoutDashboard },
-    { id: 'mobile-nav', name: 'Mobile Bottom Nav', shortName: 'Mobile Nav', icon: Smartphone },
-    { id: 'other', name: 'Other', shortName: 'Other', icon: BarChart3 },
+    { id: 'mobile-nav', name: 'Mobile Nav', shortName: 'Mobile Nav', icon: Smartphone },
+    { id: 'other', name: 'Advanced', shortName: 'Advanced', icon: BarChart3 },
   ];
 
   return (
@@ -1359,8 +1435,23 @@ export const Settings2 = () => {
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200 overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0 scrollbar-hide w-full">
-        <nav className="-mb-px flex space-x-4 md:space-x-8 w-full">
+      <div className="border-b border-gray-200 -mx-4 px-4 md:mx-0 md:px-0 w-full">
+        <div className="md:hidden pb-3">
+          <label htmlFor="settings-tab-select" className="sr-only">Select settings tab</label>
+          <select
+            id="settings-tab-select"
+            value={activeTab}
+            onChange={(e) => setActiveTab(e.target.value)}
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {tabs.map((tab) => (
+              <option key={tab.id} value={tab.id}>
+                {tab.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <nav className="-mb-px hidden md:flex space-x-4 md:space-x-8 w-full overflow-x-auto scrollbar-hide">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             return (
@@ -1408,7 +1499,7 @@ export const Settings2 = () => {
           <div className="space-y-8 max-w-full mx-auto">
             {/* Users List Card */}
             <div className="bg-white border text-gray-900 shadow-sm border-gray-200 rounded-2xl overflow-hidden relative">
-              
+
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-6 border-b border-gray-100 bg-gray-50/50">
                 <div className="flex items-center space-x-3">
                   <div className="p-2.5 bg-gray-900 text-white rounded-xl shadow-sm">
@@ -1480,11 +1571,10 @@ export const Settings2 = () => {
                       >
                         <div className="flex items-center space-x-5 flex-1 min-w-0">
                           {/* Avatar */}
-                          <div className={`h-14 w-14 rounded-2xl flex items-center justify-center flex-shrink-0 text-white font-bold text-xl shadow-sm ${
-                            systemUser.role === 'admin' ? 'bg-gradient-to-br from-gray-700 to-gray-900' :
+                          <div className={`h-14 w-14 rounded-2xl flex items-center justify-center flex-shrink-0 text-white font-bold text-xl shadow-sm ${systemUser.role === 'admin' ? 'bg-gradient-to-br from-gray-700 to-gray-900' :
                             systemUser.role === 'manager' ? 'bg-gradient-to-br from-blue-500 to-blue-700' :
-                            'bg-gradient-to-br from-emerald-400 to-emerald-600'
-                          }`}>
+                              'bg-gradient-to-br from-emerald-400 to-emerald-600'
+                            }`}>
                             {systemUser.firstName?.charAt(0) || ''}{systemUser.lastName?.charAt(0) || ''}
                           </div>
 
@@ -1502,27 +1592,25 @@ export const Settings2 = () => {
                             <p className="text-sm text-gray-500 mt-0.5 truncate font-medium flex items-center gap-1.5">
                               {systemUser.email}
                             </p>
-                            
+
                             <div className="flex flex-wrap items-center gap-2 mt-2.5">
                               {/* Role Badge */}
-                              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm border ${
-                                systemUser.role === 'admin' ? 'bg-gray-900 text-white border-gray-900' :
+                              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm border ${systemUser.role === 'admin' ? 'bg-gray-900 text-white border-gray-900' :
                                 systemUser.role === 'manager' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                                systemUser.role === 'cashier' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                                'bg-gray-50 text-gray-700 border-gray-200'
-                              }`}>
+                                  systemUser.role === 'cashier' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                    'bg-gray-50 text-gray-700 border-gray-200'
+                                }`}>
                                 <Shield className="w-3.5 h-3.5 mr-1.5 opacity-70" />
                                 {systemUser.role.charAt(0).toUpperCase() + systemUser.role.slice(1)}
                               </span>
 
                               {/* Status Badge */}
-                              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm border ${
-                                systemUser.status === 'active' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'
-                              }`}>
+                              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm border ${systemUser.status === 'active' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'
+                                }`}>
                                 <div className={`w-1.5 h-1.5 rounded-full mr-1.5 ${systemUser.status === 'active' ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`}></div>
                                 {systemUser.status === 'active' ? 'Active' : 'Inactive'}
                               </span>
-                              
+
                               {systemUser.loginCount > 0 && (
                                 <span className="text-xs text-gray-400 font-medium ml-2 px-2 border-l border-gray-200">
                                   {systemUser.loginCount} logins
@@ -1579,7 +1667,7 @@ export const Settings2 = () => {
             {/* Add/Edit User Form */}
             <div id="add-edit-user-form" className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden relative mt-8">
               <div className="absolute top-0 left-0 w-full h-1.5 bg-gray-900"></div>
-              
+
               <div className="flex flex-col sm:flex-row sm:items-center justify-between p-6 md:p-8 border-b border-gray-100 bg-white">
                 <div className="flex items-center space-x-4">
                   <div className="p-3 bg-gray-100 text-gray-900 rounded-xl shadow-sm">
@@ -1608,14 +1696,14 @@ export const Settings2 = () => {
 
               <div className="p-6 md:p-8 bg-gray-50/30">
                 <form key={editingUser?._id || 'new-user'} onSubmit={editingUser ? handleUpdateUserSubmit : handleCreateUser} className="space-y-8">
-                  
+
                   {/* Row 1: Profile Information container */}
                   <div className="bg-white p-6 md:p-8 rounded-2xl shadow-sm border border-gray-100">
                     <h3 className="text-md font-bold text-gray-900 border-b border-gray-100 pb-4 mb-6 flex items-center">
                       <User className="h-5 w-5 mr-2 text-gray-500" />
                       Profile Details
                     </h3>
-                    
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
                       {/* First Name */}
                       <div className="group">
@@ -1725,7 +1813,9 @@ export const Settings2 = () => {
                           </p>
                         </div>
                       )}
+
                     </div>
+
                   </div>
 
                   {/* Row 2: Access Configuration container */}
@@ -1734,7 +1824,7 @@ export const Settings2 = () => {
                       <Shield className="h-5 w-5 mr-2 text-indigo-500" />
                       Access & Authorizations
                     </h3>
-                    
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                       {/* Role selection */}
                       <div className="flex flex-col space-y-2">
@@ -1760,6 +1850,7 @@ export const Settings2 = () => {
                           <option value="employee">Employee — Restricted access to Sales only</option>
                           <option value="manager">Manager — Full back-office operations</option>
                           <option value="inventory">Inventory — Manage stock & ledgers</option>
+                          <option value="sales_person">Sales Person — Sales & purchase transaction workflow</option>
                           <option value="admin">Administrator — Full uninhibited access</option>
                           <option value="viewer">Viewer — Readonly reporting access</option>
                         </select>
@@ -1858,7 +1949,7 @@ export const Settings2 = () => {
                         </p>
                       </div>
                       <div className="text-xs font-bold text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100 shadow-sm whitespace-nowrap">
-                        {Object.keys(newUserData.permissions || {}).filter(k=>newUserData.permissions[k]).length} Allowed Rules
+                        {Object.keys(newUserData.permissions || {}).filter(k => newUserData.permissions[k]).length} Allowed Rules
                       </div>
                     </div>
 
@@ -1878,10 +1969,10 @@ export const Settings2 = () => {
                           {Object.entries(permissionCategories).map(([categoryKey, category]) => {
                             // Check if all permissions in category are active to show a nice global indicator
                             const totalPerms = category.permissions.length + category.permissions.reduce((acc, p) => acc + (p.subcategories?.length || 0), 0);
-                            const activePermsCount = category.permissions.filter(p => newUserData.permissions[p.key]).length + 
-                                                   category.permissions.reduce((acc, p) => acc + (p.subcategories?.filter(s => newUserData.permissions[s.key]).length || 0), 0);
+                            const activePermsCount = category.permissions.filter(p => newUserData.permissions[p.key]).length +
+                              category.permissions.reduce((acc, p) => acc + (p.subcategories?.filter(s => newUserData.permissions[s.key]).length || 0), 0);
                             const percentActive = totalPerms > 0 ? (activePermsCount / totalPerms) : 0;
-                            
+
                             return (
                               <div key={categoryKey} className="bg-white border border-gray-200 hover:border-blue-300 rounded-xl overflow-hidden shadow-sm hover:shadow transition-all duration-300 pb-2">
                                 <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80 flex items-center justify-between">
@@ -1898,7 +1989,11 @@ export const Settings2 = () => {
                                           <input
                                             type="checkbox"
                                             checked={newUserData.permissions[permission.key] || false}
-                                            onChange={(e) => handlePermissionChange(permission.key, e.target.checked)}
+                                            onChange={(e) => handlePermissionChange(
+                                              permission.key,
+                                              e.target.checked,
+                                              permission.subcategories?.map((subcategory) => subcategory.key) || []
+                                            )}
                                             className="w-4 h-4 rounded border-2 border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-offset-0 transition-all checked:border-blue-600 cursor-pointer"
                                           />
                                         </div>
@@ -1906,7 +2001,7 @@ export const Settings2 = () => {
                                           {permission.name}
                                         </span>
                                       </label>
-                                      
+
                                       {permission.subcategories && permission.subcategories.length > 0 && (
                                         <div className="ml-7 mt-0.5 space-y-0.5 border-l-2 border-gray-100 pl-3 pt-1 pb-2">
                                           {permission.subcategories.map((subcategory, index) => (
@@ -1984,66 +2079,121 @@ export const Settings2 = () => {
 
             <div className="card-content">
               <div className="space-y-6">
+                {/* Print Size Design */}
+                <div className="space-y-4">
+                  <label className="block text-sm font-semibold text-gray-800">
+                    Print Size
+                  </label>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="border border-gray-200 rounded-2xl bg-white p-4 sm:p-5 shadow-sm space-y-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <h3 className="text-sm font-semibold text-gray-900">Thermal Receipt Style</h3>
+                          <p className="text-xs text-gray-500 mt-1">Optimized for restaurant and retail POS printing.</p>
+                        </div>
+                        <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-700">
+                          Monochrome
+                        </span>
+                      </div>
+
+                      <div className="flex items-start space-x-3 p-3.5 border border-gray-200 rounded-xl bg-gray-50/50">
+                        <Checkbox
+                          id="compactMode"
+                          className="mt-0.5 w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-gray-900 data-[state=checked]:border-gray-900"
+                          checked={printSettings.invoiceLayout === 'compact'}
+                          onCheckedChange={(checked) => handlePrintSettingsChange({
+                            target: {
+                              name: 'invoiceLayout',
+                              value: checked ? 'compact' : 'standard',
+                              type: 'text'
+                            }
+                          })}
+                        />
+                        <Label htmlFor="compactMode" className="flex flex-col cursor-pointer">
+                          <span className="text-sm font-semibold text-gray-800">Compact Thermal Print Preview</span>
+                          <span className="text-xs text-gray-500 mt-1">
+                            Optimized for 80mm printers. Minimal, fast, and scanner-friendly.
+                          </span>
+                        </Label>
+                      </div>
+
+                      <div className={`flex items-start space-x-3 p-3.5 rounded-xl transition-colors ${printSettings.invoiceLayout === 'compact' ? 'border border-gray-900 bg-gray-900/5' : 'border border-gray-200 bg-white'}`}>
+                        <input
+                          type="radio"
+                          name="printSize"
+                          value="80mm"
+                          id="receipt80mm"
+                          checked={printSettings.invoiceLayout === 'compact'}
+                          onChange={handlePrintSettingsChange}
+                          className="mt-0.5 h-4 w-4 accent-gray-900"
+                        />
+                        <label htmlFor="receipt80mm" className="flex flex-col cursor-pointer">
+                          <span className="text-sm font-semibold text-gray-900">80mm Thermal Receipt</span>
+                          <span className="text-xs text-gray-600 mt-1">Professional POS paper width (only supported size).</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="border border-dashed border-gray-300 rounded-2xl p-4 sm:p-5 bg-gradient-to-br from-gray-50 to-white">
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-700">Receipt Layout Notes</h4>
+                      <ul className="mt-3 space-y-2 text-xs text-gray-600">
+                        <li>- Shop heading and identity at top</li>
+                        <li>- Item lines with qty and price alignment</li>
+                        <li>- Total block with strong visual hierarchy</li>
+                        <li>- Thank-you footer and invoice/barcode strip</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Layout Options */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-4">
+                  <label className="block text-sm font-semibold text-gray-800 mb-3">
                     Invoice/Sale Receipt Layout
                   </label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <label className="flex items-center p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <label className={`flex items-center p-3.5 border rounded-xl cursor-pointer transition-all ${printSettings.invoiceLayout === 'standard' ? 'border-gray-900 bg-gray-900/5' : 'border-gray-200 hover:bg-gray-50'}`}>
                       <input
                         type="radio"
                         name="invoiceLayout"
                         value="standard"
                         checked={printSettings.invoiceLayout === 'standard'}
                         onChange={handlePrintSettingsChange}
-                        className="mr-3"
+                        className="mr-3 h-4 w-4 accent-gray-900"
                       />
                       <div>
-                        <div className="text-sm font-medium text-gray-900">Standard</div>
-                        <div className="text-xs text-gray-500">Basic layout with company info</div>
+                        <div className="text-sm font-semibold text-gray-900">Standard</div>
+                        <div className="text-xs text-gray-500">Balanced layout for regular invoices</div>
                       </div>
                     </label>
-                    <label className="flex items-center p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
-                      <input
-                        type="radio"
-                        name="invoiceLayout"
-                        value="compact"
-                        checked={printSettings.invoiceLayout === 'compact'}
-                        onChange={handlePrintSettingsChange}
-                        className="mr-3"
-                      />
-                      <div>
-                        <div className="text-sm font-medium text-gray-900">Compact</div>
-                        <div className="text-xs text-gray-500">Condensed layout for small receipts</div>
-                      </div>
-                    </label>
-                    <label className="flex items-center p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
+
+                    <label className={`flex items-center p-3.5 border rounded-xl cursor-pointer transition-all ${printSettings.invoiceLayout === 'detailed' ? 'border-gray-900 bg-gray-900/5' : 'border-gray-200 hover:bg-gray-50'}`}>
                       <input
                         type="radio"
                         name="invoiceLayout"
                         value="detailed"
                         checked={printSettings.invoiceLayout === 'detailed'}
                         onChange={handlePrintSettingsChange}
-                        className="mr-3"
+                        className="mr-3 h-4 w-4 accent-gray-900"
                       />
                       <div>
-                        <div className="text-sm font-medium text-gray-900">Detailed</div>
-                        <div className="text-xs text-gray-500">Full layout with all information</div>
+                        <div className="text-sm font-semibold text-gray-900">Detailed</div>
+                        <div className="text-xs text-gray-500">Extended receipt with additional information</div>
                       </div>
                     </label>
-                    <label className="flex items-center p-4 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
+
+                    <label className={`flex items-center p-3.5 border rounded-xl cursor-pointer transition-all ${printSettings.invoiceLayout === 'layout2' ? 'border-gray-900 bg-gray-900/5' : 'border-gray-200 hover:bg-gray-50'}`}>
                       <input
                         type="radio"
                         name="invoiceLayout"
                         value="layout2"
                         checked={printSettings.invoiceLayout === 'layout2'}
                         onChange={handlePrintSettingsChange}
-                        className="mr-3"
+                        className="mr-3 h-4 w-4 accent-gray-900"
                       />
                       <div>
-                        <div className="text-sm font-medium text-gray-900">Layout 2 (Professional)</div>
-                        <div className="text-xs text-gray-500">Boxed layout with totals summary</div>
+                        <div className="text-sm font-semibold text-gray-900">Layout 2 (Professional)</div>
+                        <div className="text-xs text-gray-500">Professional boxed layout</div>
                       </div>
                     </label>
                   </div>
@@ -2051,7 +2201,7 @@ export const Settings2 = () => {
 
                 {/* Header and Footer Customization - Hidden for Layout 2 */}
                 {printSettings.invoiceLayout !== 'layout2' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Header Text (Optional)
@@ -2081,6 +2231,21 @@ export const Settings2 = () => {
                       />
                       <p className="text-xs text-gray-500 mt-1">
                         This text will appear at the bottom of printed documents
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Receipt Footer Message (Optional)
+                      </label>
+                      <Textarea
+                        name="receiptFooterText"
+                        value={printSettings.receiptFooterText}
+                        onChange={handlePrintSettingsChange}
+                        placeholder={"Example:\nThank you for shopping!\nPlease come again."}
+                        rows={3}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Multiline message shown at the bottom of printed receipts
                       </p>
                     </div>
                   </div>
@@ -2227,6 +2392,7 @@ export const Settings2 = () => {
                           { id: 'showPrintPaymentStatus', label: 'Pay Status' },
                           { id: 'showPrintPaymentMethod', label: 'Pay Method' },
                           { id: 'showPrintPaymentAmount', label: 'Pay Amount' },
+                          { id: 'showPrintLedgerBalance', label: 'Ledger balance on invoice' },
                         ].map(item => (
                           <div key={item.id} className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-indigo-300 hover:shadow-md transition-all duration-200 group">
                             <Checkbox
@@ -2242,37 +2408,73 @@ export const Settings2 = () => {
                         ))}
                       </div>
                     </div>
+
+                    {/* Post-Print Behavior */}
+                    <div className="space-y-4">
+                      <div className="flex items-center space-x-2 border-b border-gray-100 pb-2">
+                        <div className="p-1.5 bg-emerald-50 rounded-lg text-emerald-600"><Save className="h-4 w-4" /></div>
+                        <h4 className="text-sm font-bold text-gray-700">Post-Print Behavior</h4>
+                      </div>
+                      <div className="flex items-start space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-emerald-300 hover:shadow-md transition-all duration-200 group">
+                        <Checkbox
+                          id="autoPrintAfterSale"
+                          className="mt-0.5 w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+                          checked={printSettings.autoPrintAfterSale}
+                          onCheckedChange={(checked) => handlePrintSettingsChange({ target: { name: 'autoPrintAfterSale', type: 'checkbox', checked } })}
+                        />
+                        <Label htmlFor="autoPrintAfterSale" className="flex flex-col cursor-pointer">
+                          <span className="text-sm font-semibold text-gray-700 group-hover:text-emerald-700">Auto-print after sale</span>
+                          <span className="text-xs text-gray-500 mt-1">
+                            If checked, the print dialog opens automatically after sale completion. If unchecked, no automatic print dialog will appear.
+                          </span>
+                        </Label>
+                      </div>
+
+                    </div>
                   </div>
                 </div>
 
                 {/* Print Preview */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Print Preview
+                  <label className="block text-sm font-semibold text-gray-800 mb-2">
+                    Live Receipt Preview
                   </label>
                   <p className="text-xs text-gray-500 mb-4">
-                    This preview shows how your receipts will appear with the actual saved company information.
+                    Preview changes by selected layout: Standard, Compact (80mm thermal), or Layout 2 (Professional).
                     {(!companyData.companyName && !companyData.address && !companyData.contactNumber) && (
                       <span className="text-orange-600 font-medium"> Please save your company information first to see the preview.</span>
                     )}
                   </p>
-                  <div className="bg-gray-100 border-2 border-dashed border-gray-300 rounded-lg p-4 md:p-8 overflow-auto flex justify-center items-start min-h-[500px] max-h-[800px] shadow-inner">
-                    <div
-                      style={
-                        printSettings.mobilePrintPreview
-                          ? { maxWidth: 420, width: '100%', transform: 'scale(0.9)', transformOrigin: 'top center', marginBottom: '-100px' }
-                          : { transform: 'scale(0.6)', transformOrigin: 'top center', marginBottom: '-400px', width: '900px' }
-                      }
-                      className="transition-transform duration-300 ease-in-out"
-                    >
-                      <PrintDocument
-                        companySettings={{ ...companyData, logo: companyProfile.logo || companyData.logo }}
-                        orderData={sampleOrderData}
-                        printSettings={printSettings}
-                        documentTitle="Receipt Preview"
-                      />
+
+                  {printSettings.invoiceLayout === 'compact' ? (
+                    <div className="bg-gray-200 border border-gray-300 rounded-2xl p-3 sm:p-6 overflow-auto flex justify-center items-start min-h-[460px] shadow-inner">
+                      <div
+                        style={{ width: '80mm', maxWidth: '100%' }}
+                        className="bg-white text-black border border-black/30 rounded-md shadow-lg mx-auto transition-all duration-300 overflow-hidden"
+                      >
+                        <PrintDocument
+                          companySettings={{ ...companyData, logo: companyProfile.logo || companyData.logo }}
+                          orderData={sampleOrderData}
+                          printSettings={printSettings}
+                          documentTitle="Receipt Preview"
+                        />
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="bg-gray-100 border-2 border-dashed border-gray-300 rounded-lg p-4 md:p-8 overflow-auto flex justify-center items-start min-h-[420px] max-h-[80dvh] shadow-inner">
+                      <div
+                        style={printSettings.mobilePrintPreview ? { maxWidth: 420, width: '100%' } : { maxWidth: 900, width: '100%' }}
+                        className="transition-all duration-300 ease-in-out"
+                      >
+                        <PrintDocument
+                          companySettings={{ ...companyData, logo: companyProfile.logo || companyData.logo }}
+                          orderData={sampleOrderData}
+                          printSettings={printSettings}
+                          documentTitle="Receipt Preview"
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Save Button */}
@@ -2301,14 +2503,31 @@ export const Settings2 = () => {
             <div className="card-header">
               <div className="flex items-center space-x-2">
                 <BarChart3 className="h-5 w-5 text-gray-600" />
-                <h2 className="text-lg font-semibold">Other Settings</h2>
+                <h2 className="text-lg font-semibold">Advanced Settings</h2>
               </div>
               <p className="text-sm text-gray-600 mt-1">
-                Display options and miscellaneous settings
+                Display options, financial guidance, and advanced controls
               </p>
             </div>
             <div className="card-content">
               <div className="space-y-6">
+                <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                  <h3 className="text-sm font-semibold text-gray-900 mb-4">Financial Help</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-sm text-gray-700">
+                    <div><strong>Sales:</strong> Total revenue from Sales Orders + Sales Invoices</div>
+                    <div><strong>Net Revenue:</strong> Sales minus discounts given</div>
+                    <div><strong>Purchase (COGS):</strong> Cost of goods purchased from suppliers</div>
+                    <div><strong>Gross Profit:</strong> Net Revenue - COGS (your margin)</div>
+                    <div><strong>Receipts:</strong> Total money received (Cash Receipts + Bank Receipts + Sales Invoice Payments)</div>
+                    <div><strong>Payments:</strong> Cash/Bank money paid (includes supplier payments + expenses)</div>
+                    <div><strong>Net Cash Flow:</strong> Total receipts minus total payments (cash position)</div>
+                  </div>
+                  <div className="mt-4 p-3 bg-yellow-100 border border-yellow-300 rounded text-sm text-gray-800">
+                    <strong>Note:</strong> Receipts/Payments may include both sales/purchases and separate cash/bank transactions.
+                    For accurate accounting, check individual transaction pages.
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {/* Show Product Images */}
                   <div className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
@@ -2366,10 +2585,47 @@ export const Settings2 = () => {
                       <span className="text-[10px] text-gray-400">Column in Ledger Summary</span>
                     </Label>
                   </div>
+
+                  {/* Show Top Bar */}
+                  <div className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                    <Checkbox
+                      id="showTopBarUI"
+                      className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                      checked={showTopBarUI}
+                      onCheckedChange={(checked) => {
+                        setShowTopBarUI(checked);
+                        localStorage.setItem('showTopBarUI', String(checked));
+                        toast.success(`Top bar ${checked ? 'shown' : 'hidden'} in app layout`);
+                        window.dispatchEvent(new Event('topBarVisibilityChanged'));
+                      }}
+                    />
+                    <Label htmlFor="showTopBarUI" className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                      <span className="text-sm font-semibold">Show Top Bar</span>
+                      <span className="text-[10px] text-gray-400">Header visibility across pages</span>
+                    </Label>
+                  </div>
                 </div>
 
                 <div className="pt-4 border-t border-gray-100">
                   <OrderItemWiseConfirmationSettings />
+                </div>
+
+                <div className="pt-4 border-t border-gray-100">
+                  <div className="flex items-start justify-between gap-4 p-4 border border-gray-200 rounded-xl bg-white">
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900">Two-Factor Authentication (2FA)</h3>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Require a one-time code after email/password login for this account.
+                      </p>
+                    </div>
+                    <Checkbox
+                      id="twoFactorEnabled"
+                      checked={twoFactorEnabled}
+                      disabled={isSavingUserPreferences}
+                      onCheckedChange={(checked) => handleToggleTwoFactor(!!checked)}
+                      className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -2431,7 +2687,27 @@ export const Settings2 = () => {
                                   </div>
                                   <span className="text-sm font-bold text-gray-800 uppercase tracking-tight">{item.name}</span>
                                 </div>
-                                <span className="text-[10px] font-black text-gray-400 uppercase tracking-tighter bg-gray-100/50 px-2 py-0.5 rounded">Module Links</span>
+                                <div className="flex items-center gap-4">
+                                  <label className="flex items-center gap-2 text-[11px] font-semibold text-gray-600 bg-white px-2.5 py-1.5 rounded-lg border border-gray-200">
+                                    <Checkbox
+                                      id={`sidebar-group-${item.name}`.replace(/\s+/g, '-')}
+                                      checked={item.children.every((child) => sidebarConfig[child.name] !== false)}
+                                      onCheckedChange={(checked) => {
+                                        const newConfig = { ...sidebarConfig };
+                                        item.children.forEach((child) => {
+                                          newConfig[child.name] = !!checked;
+                                        });
+                                        setSidebarConfig(newConfig);
+                                        localStorage.setItem('sidebarConfig', JSON.stringify(newConfig));
+                                        toast.success(`${item.name} submenu ${checked ? 'enabled' : 'disabled'}`);
+                                        window.dispatchEvent(new Event('sidebarConfigChanged'));
+                                      }}
+                                      className="w-4 h-4 rounded border-2 border-gray-300 data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600 transition-colors"
+                                    />
+                                    <span>Select All</span>
+                                  </label>
+                                  <span className="text-[10px] font-black text-gray-400 uppercase tracking-tighter bg-gray-100/50 px-2 py-0.5 rounded">Module Links</span>
+                                </div>
                               </div>
                               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                                 {item.children.map((child) => {
@@ -2543,22 +2819,22 @@ export const Settings2 = () => {
               toast.error('Item already in bottom navigation.');
               return;
             }
-            
+
             // Get icon name
             let iconName = 'Circle';
             if (typeof item.icon === 'string') {
-                iconName = item.icon;
+              iconName = item.icon;
             } else if (item.icon && item.icon.name) {
-                iconName = item.icon.name;
+              iconName = item.icon.name;
             } else {
-                const info = getComponentInfo(item.href);
-                if (info && info.icon) iconName = info.icon;
+              const info = getComponentInfo(item.href);
+              if (info && info.icon) iconName = info.icon;
             }
 
-            const newConfig = [...bottomNavConfig, { 
-              name: item.name, 
-              href: item.href, 
-              icon: iconName 
+            const newConfig = [...bottomNavConfig, {
+              name: item.name,
+              href: item.href,
+              icon: iconName
             }];
             setBottomNavConfig(newConfig);
           };
@@ -2607,38 +2883,38 @@ export const Settings2 = () => {
                   </div>
                 </div>
               </div>
-              
+
               <div className="card-content p-6 flex flex-col lg:flex-row gap-8">
                 <div className="flex-1 space-y-4">
                   <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider flex items-center gap-2">
                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>
                     Current Order ({bottomNavConfig.length}/5)
                   </h3>
-                  
+
                   <div className="space-y-3 bg-gray-50/50 p-4 rounded-2xl border border-gray-100 min-h-[300px]">
                     {bottomNavConfig.length === 0 ? (
                       <div className="flex flex-col items-center justify-center h-full text-center py-12">
                         <Plus className="h-12 w-12 text-gray-300 mb-2" />
-                        <p className="text-gray-400 font-medium">No items added yet.<br/>Select from the right to begin.</p>
+                        <p className="text-gray-400 font-medium">No items added yet.<br />Select from the right to begin.</p>
                       </div>
                     ) : (
                       bottomNavConfig.map((item, index) => {
                         const IconComponent = item.icon && Icons[item.icon] ? Icons[item.icon] : Smartphone;
                         return (
-                          <div 
+                          <div
                             key={`${item.href}-${index}`}
                             className="flex items-center justify-between p-3.5 bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all group"
                           >
                             <div className="flex items-center gap-4">
                               <div className="flex flex-col gap-1">
-                                <button 
+                                <button
                                   onClick={() => handleMoveUp(index)}
                                   disabled={index === 0}
                                   className="p-1 hover:bg-gray-100 rounded disabled:opacity-30"
                                 >
                                   <ChevronUp className="h-3.5 w-3.5 text-gray-500" />
                                 </button>
-                                <button 
+                                <button
                                   onClick={() => handleMoveDown(index)}
                                   disabled={index === bottomNavConfig.length - 1}
                                   className="p-1 hover:bg-gray-100 rounded disabled:opacity-30"
@@ -2654,7 +2930,7 @@ export const Settings2 = () => {
                                 <p className="text-[10px] font-medium text-gray-400 truncate">{item.href}</p>
                               </div>
                             </div>
-                            <button 
+                            <button
                               onClick={() => handleRemoveFromNav(index)}
                               className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
                             >
@@ -2667,7 +2943,7 @@ export const Settings2 = () => {
                   </div>
 
                   <div className="flex justify-end pt-2">
-                    <LoadingButton 
+                    <LoadingButton
                       onClick={handleSaveBottomNav}
                       className="bg-gray-900 text-white hover:bg-gray-800 rounded-xl px-10 h-11 font-bold shadow-md"
                     >
@@ -2682,14 +2958,14 @@ export const Settings2 = () => {
                     <div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div>
                     Available Modules
                   </h3>
-                  
+
                   <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
                     <div className="max-h-[500px] overflow-y-auto custom-scrollbar">
                       {allAvailableItems.map((item) => {
                         const isAdded = bottomNavConfig.some(row => row.href === item.href);
                         const IconComp = item.icon || Smartphone;
                         return (
-                          <div 
+                          <div
                             key={item.href}
                             className={`flex items-center justify-between p-3.5 border-b border-gray-50 last:border-0 transition-colors ${isAdded ? 'bg-gray-50/80 opacity-60' : 'hover:bg-blue-50/30'}`}
                           >
@@ -2704,13 +2980,12 @@ export const Settings2 = () => {
                             <button
                               onClick={() => handleAddToNav(item)}
                               disabled={isAdded || bottomNavConfig.length >= 5}
-                              className={`p-1.5 rounded-lg transition-all ${
-                                isAdded 
-                                  ? 'text-green-500 cursor-default' 
-                                  : bottomNavConfig.length >= 5
-                                    ? 'text-gray-300 cursor-not-allowed'
-                                    : 'text-blue-600 hover:bg-blue-100 bg-blue-50'
-                              }`}
+                              className={`p-1.5 rounded-lg transition-all ${isAdded
+                                ? 'text-green-500 cursor-default'
+                                : bottomNavConfig.length >= 5
+                                  ? 'text-gray-300 cursor-not-allowed'
+                                  : 'text-blue-600 hover:bg-blue-100 bg-blue-50'
+                                }`}
                             >
                               {isAdded ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                             </button>
