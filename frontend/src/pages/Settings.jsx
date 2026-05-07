@@ -29,7 +29,8 @@ import {
   AlertCircle,
   UserPlus,
   ChevronUp,
-  ChevronDown
+  ChevronDown,
+  Package
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -141,6 +142,25 @@ export const Settings2 = () => {
     invoiceLayout: 'standard',
     logoSize: 100
   });
+
+  const [showSupplierSetting_contactPerson, setShowSupplierSetting_contactPerson] = useState(localStorage.getItem('showSupplierSetting_contactPerson') === 'true');
+  const [showSupplierSetting_email, setShowSupplierSetting_email] = useState(localStorage.getItem('showSupplierSetting_email') === 'true');
+  const [showSupplierSetting_paymentTerms, setShowSupplierSetting_paymentTerms] = useState(localStorage.getItem('showSupplierSetting_paymentTerms') === 'true');
+  const [showSupplierSetting_website, setShowSupplierSetting_website] = useState(localStorage.getItem('showSupplierSetting_website') === 'true');
+  const [showSupplierSetting_leadTime, setShowSupplierSetting_leadTime] = useState(localStorage.getItem('showSupplierSetting_leadTime') === 'true');
+  const [showSupplierSetting_minOrder, setShowSupplierSetting_minOrder] = useState(localStorage.getItem('showSupplierSetting_minOrder') === 'true');
+  const [showSupplierSetting_rating, setShowSupplierSetting_rating] = useState(localStorage.getItem('showSupplierSetting_rating') === 'true');
+  const [showSupplierSetting_reliability, setShowSupplierSetting_reliability] = useState(localStorage.getItem('showSupplierSetting_reliability') === 'true');
+  const [showSupplierSetting_state, setShowSupplierSetting_state] = useState(localStorage.getItem('showSupplierSetting_state') === 'true');
+  const [showSupplierSetting_zipCode, setShowSupplierSetting_zipCode] = useState(localStorage.getItem('showSupplierSetting_zipCode') === 'true');
+  const [showSupplierSetting_notes, setShowSupplierSetting_notes] = useState(localStorage.getItem('showSupplierSetting_notes') === 'true');
+
+  const toggleSupplierSetting = (key, value, setter) => {
+    localStorage.setItem(key, String(!!value));
+    setter(!!value);
+    window.dispatchEvent(new Event('supplierVisibilitySettingsChanged'));
+    toast.success('Supplier settings updated');
+  };
 
   const sampleOrderData = useMemo(() => ({
     invoiceNumber: 'INV-PREVIEW',
@@ -1415,6 +1435,31 @@ export const Settings2 = () => {
     const saved = localStorage.getItem('showTopBarUI');
     return saved === null ? true : saved === 'true';
   });
+  const [useMarketPurchasePrices, setUseMarketPurchasePrices] = useState(false);
+
+  // Product Visibility Settings
+  const [showProductSetting_reorderPoint, setShowProductSetting_reorderPoint] = useState(() => localStorage.getItem('showProductSetting_reorderPoint') === 'true');
+  const [showProductSetting_unit, setShowProductSetting_unit] = useState(() => localStorage.getItem('showProductSetting_unit') === 'true');
+  const [showProductSetting_piecesPerBox, setShowProductSetting_piecesPerBox] = useState(() => localStorage.getItem('showProductSetting_piecesPerBox') === 'true');
+  const [showProductSetting_expiryDate, setShowProductSetting_expiryDate] = useState(() => localStorage.getItem('showProductSetting_expiryDate') === 'true');
+  const [showProductSetting_brand, setShowProductSetting_brand] = useState(() => localStorage.getItem('showProductSetting_brand') === 'true');
+  const [showProductSetting_barcode, setShowProductSetting_barcode] = useState(() => localStorage.getItem('showProductSetting_barcode') === 'true');
+  const [showProductSetting_sku, setShowProductSetting_sku] = useState(() => localStorage.getItem('showProductSetting_sku') === 'true');
+  const [showProductSetting_hsCode, setShowProductSetting_hsCode] = useState(() => localStorage.getItem('showProductSetting_hsCode') === 'true');
+  const [showProductSetting_countryOfOrigin, setShowProductSetting_countryOfOrigin] = useState(() => localStorage.getItem('showProductSetting_countryOfOrigin') === 'true');
+  const [showProductSetting_netWeight, setShowProductSetting_netWeight] = useState(() => localStorage.getItem('showProductSetting_netWeight') === 'true');
+  const [showProductSetting_grossWeight, setShowProductSetting_grossWeight] = useState(() => localStorage.getItem('showProductSetting_grossWeight') === 'true');
+  const [showProductSetting_importRefNo, setShowProductSetting_importRefNo] = useState(() => localStorage.getItem('showProductSetting_importRefNo') === 'true');
+  const [showProductSetting_gdNumber, setShowProductSetting_gdNumber] = useState(() => localStorage.getItem('showProductSetting_gdNumber') === 'true');
+  const [showProductSetting_invoiceRef, setShowProductSetting_invoiceRef] = useState(() => localStorage.getItem('showProductSetting_invoiceRef') === 'true');
+
+  // Customer Visibility Settings
+  const [showCustomerSetting_contactPerson, setShowCustomerSetting_contactPerson] = useState(() => localStorage.getItem('showCustomerSetting_contactPerson') === 'true');
+  const [showCustomerSetting_email, setShowCustomerSetting_email] = useState(() => localStorage.getItem('showCustomerSetting_email') === 'true');
+  const [showCustomerSetting_customerTier, setShowCustomerSetting_customerTier] = useState(() => localStorage.getItem('showCustomerSetting_customerTier') === 'true');
+  const [showCustomerSetting_state, setShowCustomerSetting_state] = useState(() => localStorage.getItem('showCustomerSetting_state') === 'true');
+  const [showCustomerSetting_zipCode, setShowCustomerSetting_zipCode] = useState(() => localStorage.getItem('showCustomerSetting_zipCode') === 'true');
+  const [showCustomerSetting_notes, setShowCustomerSetting_notes] = useState(() => localStorage.getItem('showCustomerSetting_notes') === 'true');
 
   const tabs = [
     { id: 'company', name: 'Company Information', shortName: 'Company', icon: Building },
@@ -1422,8 +1467,57 @@ export const Settings2 = () => {
     { id: 'print', name: 'Print Preview Settings', shortName: 'Print', icon: Printer },
     { id: 'sidebar', name: 'Sidebar Configuration', shortName: 'Sidebar', icon: LayoutDashboard },
     { id: 'mobile-nav', name: 'Mobile Nav', shortName: 'Mobile Nav', icon: Smartphone },
+    { id: 'products', name: 'Product Settings', shortName: 'Products', icon: Package },
+    { id: 'customers', name: 'Customer Settings', shortName: 'Customers', icon: UserPlus },
+    { id: 'suppliers', name: 'Supplier Settings', shortName: 'Suppliers', icon: Building },
     { id: 'other', name: 'Advanced', shortName: 'Advanced', icon: BarChart3 },
   ];
+
+  useEffect(() => {
+    const enabled = settings?.orderSettings?.useMarketPurchasePrices === true;
+    setUseMarketPurchasePrices(enabled);
+  }, [settings?.orderSettings?.useMarketPurchasePrices]);
+
+  const syncMarketPricesSidebarVisibility = (enabled) => {
+    const savedSidebarRaw = localStorage.getItem('sidebarConfig');
+    let savedSidebar = {};
+    if (savedSidebarRaw) {
+      try {
+        savedSidebar = JSON.parse(savedSidebarRaw) || {};
+      } catch (_) {
+        savedSidebar = {};
+      }
+    }
+    const nextSidebar = {
+      ...savedSidebar,
+      'Current Purchase Market Prices': !!enabled,
+    };
+    delete nextSidebar['Current Market Prices'];
+    localStorage.setItem('sidebarConfig', JSON.stringify(nextSidebar));
+    setSidebarConfig(nextSidebar);
+    window.dispatchEvent(new Event('sidebarConfigChanged'));
+  };
+
+  const handleMarketPriceFeatureToggle = async (checked) => {
+    const nextChecked = !!checked;
+    const previousChecked = useMarketPurchasePrices;
+    setUseMarketPurchasePrices(nextChecked);
+    syncMarketPricesSidebarVisibility(nextChecked);
+    try {
+      await updateCompanySettings({
+        orderSettings: {
+          ...(settings?.orderSettings || {}),
+          useMarketPurchasePrices: nextChecked,
+        },
+      }).unwrap();
+      toast.success(`Market purchase prices ${nextChecked ? 'enabled' : 'disabled'}.`);
+      refetchSettings();
+    } catch (error) {
+      setUseMarketPurchasePrices(previousChecked);
+      syncMarketPricesSidebarVisibility(previousChecked);
+      handleApiError(error, 'Update Market Purchase Price Setting');
+    }
+  };
 
   return (
     <div className="space-y-6 overflow-x-hidden">
@@ -2529,41 +2623,22 @@ export const Settings2 = () => {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {/* Show Product Images */}
+                  {/* Show Return Column */}
                   <div className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
                     <Checkbox
-                      id="showProductImagesUI"
+                      id="accountLedgerShowReturn"
                       className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
-                      checked={showProductImagesUI}
+                      checked={accountLedgerShowReturn}
                       onCheckedChange={(checked) => {
-                        setShowProductImagesUI(checked);
-                        localStorage.setItem('showProductImagesUI', String(checked));
-                        toast.success(`Product images ${checked ? 'shown' : 'hidden'} in UI tables`);
-                        window.dispatchEvent(new Event('productImagesConfigChanged'));
+                        setAccountLedgerShowReturn(checked);
+                        localStorage.setItem('accountLedgerShowReturnColumn', String(checked));
+                        toast.success(`Return column ${checked ? 'shown' : 'hidden'} in Account Ledger Summary`);
+                        window.dispatchEvent(new Event('accountLedgerConfigChanged'));
                       }}
                     />
-                    <Label htmlFor="showProductImagesUI" className="flex flex-col cursor-pointer group-hover:text-blue-700">
-                      <span className="text-sm font-semibold">Show Product Images</span>
-                      <span className="text-[10px] text-gray-400">Thumbnails in lists & POS</span>
-                    </Label>
-                  </div>
-
-                  {/* Show HS Code */}
-                  <div className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
-                    <Checkbox
-                      id="showProductHsCodeColumn"
-                      className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
-                      checked={showProductHsCodeColumn}
-                      onCheckedChange={(checked) => {
-                        setShowProductHsCodeColumn(checked);
-                        localStorage.setItem('showProductHsCodeColumn', String(checked));
-                        toast.success(`HS Code column ${checked ? 'shown' : 'hidden'} on Products list`);
-                        window.dispatchEvent(new Event('productHsCodeColumnConfigChanged'));
-                      }}
-                    />
-                    <Label htmlFor="showProductHsCodeColumn" className="flex flex-col cursor-pointer group-hover:text-blue-700">
-                      <span className="text-sm font-semibold">Show HS Code Column</span>
-                      <span className="text-[10px] text-gray-400">Include in product lists</span>
+                    <Label htmlFor="accountLedgerShowReturn" className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                      <span className="text-sm font-semibold">Show Ledger Return</span>
+                      <span className="text-[10px] text-gray-400">Column in Ledger Summary</span>
                     </Label>
                   </div>
 
@@ -2604,6 +2679,19 @@ export const Settings2 = () => {
                       <span className="text-[10px] text-gray-400">Header visibility across pages</span>
                     </Label>
                   </div>
+
+                  <div className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                    <Checkbox
+                      id="useMarketPurchasePrices"
+                      className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                      checked={useMarketPurchasePrices}
+                      onCheckedChange={(checked) => handleMarketPriceFeatureToggle(!!checked)}
+                    />
+                    <Label htmlFor="useMarketPurchasePrices" className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                      <span className="text-sm font-semibold">Enable Market Purchase Prices</span>
+                      <span className="text-[10px] text-gray-400">Uses Current Purchase Market Prices in Purchase and shows sidebar link</span>
+                    </Label>
+                  </div>
                 </div>
 
                 <div className="pt-4 border-t border-gray-100">
@@ -2626,6 +2714,238 @@ export const Settings2 = () => {
                       className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
                     />
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'products' && (
+          <div className="card">
+            <div className="card-header">
+              <div className="flex items-center space-x-2">
+                <Package className="h-5 w-5 text-gray-600" />
+                <h2 className="text-lg font-semibold">Product Settings</h2>
+              </div>
+              <p className="text-sm text-gray-600 mt-1">
+                Customize which fields are visible in the product entry form and lists
+              </p>
+            </div>
+            <div className="card-content">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                {/* Show Product Images */}
+                <div className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                  <Checkbox
+                    id="showProductImagesUI_tab"
+                    className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                    checked={showProductImagesUI}
+                    onCheckedChange={(checked) => {
+                      setShowProductImagesUI(checked);
+                      localStorage.setItem('showProductImagesUI', String(checked));
+                      toast.success(`Product images ${checked ? 'shown' : 'hidden'} in UI tables`);
+                      window.dispatchEvent(new Event('productImagesConfigChanged'));
+                    }}
+                  />
+                  <Label htmlFor="showProductImagesUI_tab" className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                    <span className="text-sm font-semibold">Show Product Images</span>
+                    <span className="text-[10px] text-gray-400">Thumbnails in lists & POS</span>
+                  </Label>
+                </div>
+              </div>
+
+              <div className="border-t border-gray-100 pt-6">
+                <h3 className="text-sm font-semibold text-gray-900 mb-4 px-1">Detailed Field Visibility</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {[
+                    { id: 'reorderPoint', label: 'Reorder Point', sub: 'Min stock for reorder' },
+                    { id: 'unit', label: 'Unit of Measurement', sub: 'PCS, KG, etc.' },
+                    { id: 'piecesPerBox', label: 'Pieces per Box', sub: 'Box packing details' },
+                    { id: 'expiryDate', label: 'Expiry Date', sub: 'Product expiration' },
+                    { id: 'brand', label: 'Brand', sub: 'Product manufacturer' },
+                    { id: 'barcode', label: 'Barcode', sub: 'Scan or enter code' },
+                    { id: 'sku', label: 'SKU', sub: 'Stock keeping unit' },
+                    { id: 'hsCode', label: 'HS Code', sub: 'Customs code & list column' },
+                    { id: 'countryOfOrigin', label: 'Country of Origin', sub: 'Manufacturing country' },
+                    { id: 'netWeight', label: 'Net Weight (KG)', sub: 'Product weight only' },
+                    { id: 'grossWeight', label: 'Gross Weight (KG)', sub: 'Weight with packing' },
+                    { id: 'importRefNo', label: 'Import Ref No', sub: 'Tracking for imports' },
+                    { id: 'gdNumber', label: 'GD Number', sub: 'Goods declaration' },
+                    { id: 'invoiceRef', label: 'Invoice Ref', sub: 'Supplier invoice reference' },
+                  ].map((item) => {
+                    const stateKey = `showProductSetting_${item.id}`;
+                    const states = {
+                      showProductSetting_reorderPoint,
+                      showProductSetting_unit,
+                      showProductSetting_piecesPerBox,
+                      showProductSetting_expiryDate,
+                      showProductSetting_brand,
+                      showProductSetting_barcode,
+                      showProductSetting_sku,
+                      showProductSetting_hsCode,
+                      showProductSetting_countryOfOrigin,
+                      showProductSetting_netWeight,
+                      showProductSetting_grossWeight,
+                      showProductSetting_importRefNo,
+                      showProductSetting_gdNumber,
+                      showProductSetting_invoiceRef
+                    };
+                    const setters = {
+                      showProductSetting_reorderPoint: setShowProductSetting_reorderPoint,
+                      showProductSetting_unit: setShowProductSetting_unit,
+                      showProductSetting_piecesPerBox: setShowProductSetting_piecesPerBox,
+                      showProductSetting_expiryDate: setShowProductSetting_expiryDate,
+                      showProductSetting_brand: setShowProductSetting_brand,
+                      showProductSetting_barcode: setShowProductSetting_barcode,
+                      showProductSetting_sku: setShowProductSetting_sku,
+                      showProductSetting_hsCode: setShowProductSetting_hsCode,
+                      showProductSetting_countryOfOrigin: setShowProductSetting_countryOfOrigin,
+                      showProductSetting_netWeight: setShowProductSetting_netWeight,
+                      showProductSetting_grossWeight: setShowProductSetting_grossWeight,
+                      showProductSetting_importRefNo: setShowProductSetting_importRefNo,
+                      showProductSetting_gdNumber: setShowProductSetting_gdNumber,
+                      showProductSetting_invoiceRef: setShowProductSetting_invoiceRef
+                    };
+
+                    return (
+                      <div key={item.id} className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                        <Checkbox
+                          id={stateKey}
+                          className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                          checked={states[stateKey]}
+                          onCheckedChange={(checked) => {
+                            setters[stateKey](checked);
+                            localStorage.setItem(stateKey, String(checked));
+                            toast.success(`${item.label} ${checked ? 'enabled' : 'disabled'}`);
+                            window.dispatchEvent(new Event('productVisibilitySettingsChanged'));
+                            // Also sync the legacy HS Code setting if this is HS Code
+                            if (item.id === 'hsCode') {
+                              localStorage.setItem('showProductHsCodeColumn', String(checked));
+                              window.dispatchEvent(new Event('productHsCodeColumnConfigChanged'));
+                              setShowProductHsCodeColumn(checked);
+                            }
+                          }}
+                        />
+                        <Label htmlFor={stateKey} className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                          <span className="text-sm font-semibold">{item.label}</span>
+                          <span className="text-[10px] text-gray-400">{item.sub}</span>
+                        </Label>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'customers' && (
+          <div className="card">
+            <div className="card-header">
+              <div className="flex items-center space-x-2">
+                <Users className="h-5 w-5 text-gray-600" />
+                <h2 className="text-lg font-semibold">Customer Settings</h2>
+              </div>
+              <p className="text-sm text-gray-600 mt-1">
+                Customize which fields are visible in the customer entry form
+              </p>
+            </div>
+            <div className="card-content">
+              <div className="space-y-6">
+                <h3 className="text-sm font-semibold text-gray-900 mb-4 px-1">Field Visibility</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {[
+                    { id: 'contactPerson', label: 'Contact Person', sub: 'Name of the person' },
+                    { id: 'email', label: 'Email', sub: 'Primary contact email' },
+                    { id: 'customerTier', label: 'Customer Tier', sub: 'Bronze, Silver, Gold, etc.' },
+                    { id: 'state', label: 'State / Province', sub: 'Part of address details' },
+                    { id: 'zipCode', label: 'Zip Code', sub: 'Postal code for address' },
+                    { id: 'notes', label: 'Notes', sub: 'Additional information' },
+                  ].map((item) => {
+                    const stateKey = `showCustomerSetting_${item.id}`;
+                    const states = {
+                      showCustomerSetting_contactPerson,
+                      showCustomerSetting_email,
+                      showCustomerSetting_customerTier,
+                      showCustomerSetting_state,
+                      showCustomerSetting_zipCode,
+                      showCustomerSetting_notes,
+                    };
+                    const setters = {
+                      showCustomerSetting_contactPerson: setShowCustomerSetting_contactPerson,
+                      showCustomerSetting_email: setShowCustomerSetting_email,
+                      showCustomerSetting_customerTier: setShowCustomerSetting_customerTier,
+                      showCustomerSetting_state: setShowCustomerSetting_state,
+                      showCustomerSetting_zipCode: setShowCustomerSetting_zipCode,
+                      showCustomerSetting_notes: setShowCustomerSetting_notes,
+                    };
+
+                    return (
+                      <div key={item.id} className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                        <Checkbox
+                          id={stateKey}
+                          className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                          checked={states[stateKey]}
+                          onCheckedChange={(checked) => {
+                            setters[stateKey](checked);
+                            localStorage.setItem(stateKey, String(checked));
+                            toast.success(`${item.label} ${checked ? 'shown' : 'hidden'}`);
+                            window.dispatchEvent(new Event('customerVisibilitySettingsChanged'));
+                          }}
+                        />
+                        <Label htmlFor={stateKey} className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                          <span className="text-sm font-semibold">{item.label}</span>
+                          <span className="text-[10px] text-gray-400">{item.sub}</span>
+                        </Label>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'suppliers' && (
+          <div className="card">
+            <div className="card-header">
+              <div className="flex items-center space-x-2">
+                <Building className="h-5 w-5 text-gray-600" />
+                <h2 className="text-lg font-semibold">Supplier Settings</h2>
+              </div>
+              <p className="text-sm text-gray-600 mt-1">
+                Control which fields are visible in supplier forms and lists
+              </p>
+            </div>
+            <div className="card-content">
+              <div className="space-y-6">
+                <h3 className="text-sm font-semibold text-gray-900 mb-4 px-1">Field visibility</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {[
+                    { id: 'showSupplierSetting_contactPerson', label: 'Contact Person', sub: 'Primary contact name', state: showSupplierSetting_contactPerson, setter: setShowSupplierSetting_contactPerson },
+                    { id: 'showSupplierSetting_email', label: 'Email', sub: 'Contact email', state: showSupplierSetting_email, setter: setShowSupplierSetting_email },
+                    { id: 'showSupplierSetting_paymentTerms', label: 'Payment Terms', sub: 'Default payment terms', state: showSupplierSetting_paymentTerms, setter: setShowSupplierSetting_paymentTerms },
+                    { id: 'showSupplierSetting_website', label: 'Website', sub: 'Company website', state: showSupplierSetting_website, setter: setShowSupplierSetting_website },
+                    { id: 'showSupplierSetting_leadTime', label: 'Lead Time', sub: 'Delivery lead time', state: showSupplierSetting_leadTime, setter: setShowSupplierSetting_leadTime },
+                    { id: 'showSupplierSetting_minOrder', label: 'Min Order', sub: 'Minimum order quantity', state: showSupplierSetting_minOrder, setter: setShowSupplierSetting_minOrder },
+                    { id: 'showSupplierSetting_rating', label: 'Rating', sub: 'Supplier rating', state: showSupplierSetting_rating, setter: setShowSupplierSetting_rating },
+                    { id: 'showSupplierSetting_reliability', label: 'Reliability', sub: 'Reliability score', state: showSupplierSetting_reliability, setter: setShowSupplierSetting_reliability },
+                    { id: 'showSupplierSetting_state', label: 'State / Province', sub: 'Part of address', state: showSupplierSetting_state, setter: setShowSupplierSetting_state },
+                    { id: 'showSupplierSetting_zipCode', label: 'Zip Code', sub: 'Postal code', state: showSupplierSetting_zipCode, setter: setShowSupplierSetting_zipCode },
+                    { id: 'showSupplierSetting_notes', label: 'Notes', sub: 'Additional information', state: showSupplierSetting_notes, setter: setShowSupplierSetting_notes },
+                  ].map((item) => (
+                    <div key={item.id} className="flex items-center space-x-3 p-3.5 border border-gray-200 rounded-xl bg-white hover:border-blue-300 hover:shadow-md transition-all duration-200 group">
+                      <Checkbox
+                        id={item.id}
+                        className="w-5 h-5 rounded-md border-2 border-gray-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                        checked={item.state}
+                        onCheckedChange={(checked) => toggleSupplierSetting(item.id, checked === true, item.setter)}
+                      />
+                      <Label htmlFor={item.id} className="flex flex-col cursor-pointer group-hover:text-blue-700">
+                        <span className="text-sm font-semibold">{item.label}</span>
+                        <span className="text-[10px] text-gray-400">{item.sub}</span>
+                      </Label>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>

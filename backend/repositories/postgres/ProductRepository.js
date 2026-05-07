@@ -1,6 +1,7 @@
 const { query } = require('../../config/postgres');
 const inventoryBalanceRepository = require('./InventoryBalanceRepository');
 const { decodeCursor, encodeCursor } = require('../../utils/keysetCursor');
+const { splitSearchTokens } = require('../../utils/searchTokens');
 
 
 function rowToProduct(row) {
@@ -101,7 +102,9 @@ class ProductRepository {
         paramCount++;
       }
     } else if (filters.search) {
-      sql += ` AND (
+      const tokens = splitSearchTokens(filters.search);
+      for (const token of tokens) {
+        sql += ` AND (
         name ILIKE $${paramCount}
         OR sku ILIKE $${paramCount}
         OR barcode ILIKE $${paramCount}
@@ -110,8 +113,9 @@ class ProductRepository {
         OR gd_number ILIKE $${paramCount}
         OR invoice_ref ILIKE $${paramCount}
       )`;
-      params.push(`%${filters.search}%`);
-      paramCount++;
+        params.push(`%${token}%`);
+        paramCount++;
+      }
     }
     if (filters.lowStock) {
       sql += ' AND stock_quantity <= min_stock_level';
@@ -356,7 +360,9 @@ class ProductRepository {
         cn++;
       }
     } else if (filters.search) {
-      countSql += ` AND (
+      const tokens = splitSearchTokens(filters.search);
+      for (const token of tokens) {
+        countSql += ` AND (
         name ILIKE $${cn}
         OR sku ILIKE $${cn}
         OR barcode ILIKE $${cn}
@@ -365,8 +371,9 @@ class ProductRepository {
         OR gd_number ILIKE $${cn}
         OR invoice_ref ILIKE $${cn}
       )`;
-      countParams.push(`%${filters.search}%`);
-      cn++;
+        countParams.push(`%${token}%`);
+        cn++;
+      }
     }
     if (filters.lowStock) {
       countSql += ' AND stock_quantity <= min_stock_level';
@@ -491,6 +498,53 @@ class ProductRepository {
   /**
    * @returns {Map<string, Array>} product id -> rows with investor_name, investor_email, share_percentage, added_at
    */
+  /**
+   * Product UUIDs (as strings) that appear on at least one non-deleted sale line in `sales.items` JSONB.
+   * Ignores manual / non-UUID line keys (e.g. manual_*).
+   * @param {string[]} productIds
+   * @returns {Promise<Set<string>>}
+   */
+  async findProductIdsUsedInSales(productIds) {
+    const used = new Set();
+    if (!productIds?.length) return used;
+    const validUuids = productIds.filter(
+      (id) =>
+        typeof id === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id.trim())
+    );
+    if (validUuids.length === 0) return used;
+
+    const result = await query(
+      `SELECT DISTINCT sub.pid
+       FROM sales s
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE WHEN jsonb_typeof(s.items) = 'array' THEN s.items ELSE '[]'::jsonb END
+       ) AS elem
+       CROSS JOIN LATERAL (
+         SELECT TRIM(BOTH FROM COALESCE(
+           NULLIF(TRIM(elem->>'product_id'), ''),
+           CASE
+             WHEN jsonb_typeof(elem->'product') = 'string' THEN NULLIF(TRIM(elem->>'product'), '')
+             WHEN jsonb_typeof(elem->'product') = 'object' THEN NULLIF(
+               TRIM(COALESCE(elem->'product'->>'id', elem->'product'->>'_id', '')),
+               ''
+             )
+             ELSE NULLIF(TRIM(elem->>'product'), '')
+           END
+         )) AS pid
+       ) AS sub
+       WHERE s.deleted_at IS NULL
+         AND sub.pid IS NOT NULL
+         AND sub.pid NOT LIKE 'manual_%'
+         AND sub.pid = ANY($1::text[])`,
+      [validUuids.map((u) => String(u).trim())]
+    );
+    for (const row of result.rows || []) {
+      if (row.pid) used.add(String(row.pid));
+    }
+    return used;
+  }
+
   async findInvestorsByProductIds(productIds) {
     if (!productIds?.length) return new Map();
     

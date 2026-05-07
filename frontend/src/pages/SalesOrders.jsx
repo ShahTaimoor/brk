@@ -5,7 +5,6 @@ import {
   Calendar,
   Search,
   Filter,
-  Plus,
   Edit,
   Trash2,
   Eye,
@@ -50,6 +49,7 @@ import {
   OrderCheckoutCard,
   OrderDetailsSection,
   OrderSummaryContent,
+  OrderSummaryBar,
   OrderCheckoutActions,
 } from '../components/order/OrderCheckoutLayout';
 import { useGetCustomerQuery } from '../store/services/customersApi';
@@ -2019,154 +2019,109 @@ const SalesOrders = ({ tabId }) => {
 
   return (
     <div className="space-y-4 lg:space-y-6 w-full max-w-full overflow-x-hidden px-2 sm:px-0">
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <h1 className="text-lg sm:text-2xl font-bold text-gray-900 truncate">Sales Orders</h1>
-          <p className="hidden sm:block text-sm sm:text-base text-gray-600">Process sales order transactions</p>
-        </div>
-        <div className="flex items-center space-x-2 flex-shrink-0">
-
-          <Button
-            onClick={resetForm}
-            variant="default"
-            size="default"
-            className="px-3 sm:px-4"
-          >
-            <Plus className="h-4 w-4 sm:mr-2" />
-            <span className="hidden sm:inline">New Sales Order</span>
-            <span className="sm:hidden">New Order</span>
-          </Button>
-        </div>
-      </div>
-
-      {/* Customer Selection and Information Row */}
-      <div className="flex flex-col lg:flex-row items-stretch lg:items-start lg:gap-12 gap-4">
-        {/* Customer Selection */}
-        <div className="w-full max-w-3xl lg:flex-shrink-0">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <label className="block text-sm font-medium text-gray-700">
-                Select Customer
-              </label>
-              {selectedCustomer && (
-                <button
-                  onClick={() => {
-                    setSelectedCustomer(null);
-                    setCustomerSearchTerm('');
-                    setFormData(prev => ({ ...prev, customer: '' }));
-
-                    // Reset last prices state when customer is cleared
-                    setOriginalPrices({});
-                    setIsLastPricesApplied(false);
-                    setPriceStatus({});
-
-                    // Tab title will be updated by useEffect when selectedCustomer changes
-                  }}
-                  className="text-xs text-blue-600 hover:text-blue-800 underline"
-                  title="Change customer"
-                >
-                  Change Customer
-                </button>
-              )}
+      {/* Modern Header Section */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3">
+        <div className="flex flex-col lg:flex-row lg:items-center gap-3 lg:gap-4">
+          {/* Title & Customer Selection */}
+          <div className="flex flex-col sm:flex-row sm:items-center flex-1 gap-3">
+            <div className="flex-shrink-0">
+              <h1 className="text-base sm:text-xl font-bold text-gray-900 truncate">Sales Orders</h1>
             </div>
-            <div className="flex items-center space-x-2">
-              <div className="flex items-center space-x-2">
-                <label className="text-xs font-normal text-gray-400">Price Type:</label>
-                <select
-                  value={priceType}
-                  onChange={(e) => setPriceType(e.target.value)}
-                  className="border border-gray-200 rounded-md px-2 py-1 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-400 focus:border-primary-400"
-                >
-                  <option value="wholesale">Wholesale</option>
-                  <option value="retail">Retail</option>
-                  <option value="distributor">Distributor</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-            </div>
-          </div>
-          <SearchableDropdown
-            ref={customerSearchRef}
-            placeholder="Search customers by name, email, or business..."
-            items={customers}
-            onSelect={handleCustomerSelect}
-            onSearch={handleCustomerSearch}
-            displayKey={customerDisplayKey}
-            selectedItem={selectedCustomer}
-            loading={customersLoading || customersFetching}
-            emptyMessage={customerSearchTerm.length > 0 ? "No customers found" : "Start typing to search customers..."}
-            value={customerSearchTerm}
-            rightContentKey="city"
-          />
-        </div>
-
-        {/* Customer Information - Right Side */}
-        <div className="flex-1">
-          {selectedCustomer ? (
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
-              <div className="flex items-center space-x-3">
-                <User className="h-5 w-5 text-gray-400" />
-                <div className="flex-1">
-                  <p className="font-medium">{selectedCustomer.businessName || selectedCustomer.business_name || selectedCustomer.displayName || selectedCustomer.name || 'Unknown'}</p>
-                  <p className="text-sm text-gray-600 capitalize">
-                    {selectedCustomer.businessType || 'Business'} • {selectedCustomer.phone || 'No phone'}
-                  </p>
-                  <div className="flex items-center space-x-4 mt-2 flex-wrap gap-y-1">
-                    {(() => {
-                      // Use displayBalance which prioritizes selectedCustomer.currentBalance (already correct from bulk query)
-                      const balanceNum = Number(displayBalance);
-                      const totalBalance = (isNaN(balanceNum) || balanceNum === null || balanceNum === undefined) ? 0 : balanceNum;
-                      const isPayable = totalBalance < 0;
-                      const isReceivable = totalBalance > 0;
-                      return (
-                        <div className="flex items-center space-x-1">
-                          <span className="text-xs text-gray-500">Balance:</span>
-                          <span className={`text-sm font-medium ${isPayable ? 'text-red-600' : isReceivable ? 'text-green-600' : 'text-gray-600'}`}>
-                            {isPayable ? '-' : ''}{Math.abs(totalBalance).toFixed(2)}
-                          </span>
-                        </div>
-                      );
-                    })()}
-                    {(() => {
-                      const creditLimitNum = Math.max(0, Number(displayCreditLimit) || 0);
-                      const currentBalanceNum = Number(displayBalance);
-                      const safeBalance = (isNaN(currentBalanceNum) || currentBalanceNum === null || currentBalanceNum === undefined) ? 0 : currentBalanceNum;
-                      const availableCreditNum = Math.max(0, creditLimitNum - safeBalance);
-                      return (
-                        <>
-                          <div className="flex items-center space-x-1">
-                            <span className="text-xs text-gray-500">Credit Limit:</span>
-                            <span className={`text-sm font-medium ${creditLimitNum > 0 ? (
-                              safeBalance >= creditLimitNum * 0.9 ? 'text-red-600'
-                                : safeBalance >= creditLimitNum * 0.7 ? 'text-yellow-600' : 'text-blue-600'
-                            ) : 'text-gray-600'}`}>
-                              {creditLimitNum.toFixed(2)}
-                            </span>
-                            {creditLimitNum > 0 && safeBalance >= creditLimitNum * 0.9 && (
-                              <span className="text-xs text-red-600 font-bold ml-1">⚠️</span>
-                            )}
-                          </div>
-                          <div className="flex items-center space-x-1">
-                            <span className="text-xs text-gray-500">Available Credit:</span>
-                            <span className={`text-sm font-medium ${creditLimitNum > 0 ? (
-                              availableCreditNum <= creditLimitNum * 0.1 ? 'text-red-600'
-                                : availableCreditNum <= creditLimitNum * 0.3 ? 'text-yellow-600' : 'text-green-600'
-                            ) : 'text-gray-600'}`}>
-                              {availableCreditNum.toFixed(2)}
-                            </span>
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
+            <div className="hidden sm:block h-7 w-px bg-gray-200"></div>
+            <div className="flex-1 min-w-0 sm:min-w-[300px]">
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                    Select Customer
+                  </label>
+                  {selectedCustomer && (
+                    <button
+                      onClick={() => {
+                        setSelectedCustomer(null);
+                        setCustomerSearchTerm('');
+                        setFormData(prev => ({ ...prev, customer: '' }));
+                        setOriginalPrices({});
+                        setIsLastPricesApplied(false);
+                        setPriceStatus({});
+                      }}
+                      className="text-[10px] text-blue-600 hover:text-blue-800 font-bold uppercase tracking-wider underline"
+                    >
+                      Change
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Price Type:</label>
+                  <select
+                    value={priceType}
+                    onChange={(e) => setPriceType(e.target.value)}
+                    className="bg-gray-50 border-none text-[11px] font-bold text-gray-700 rounded-md py-0 px-2 h-5 focus:ring-0 cursor-pointer"
+                  >
+                    <option value="wholesale">Wholesale</option>
+                    <option value="retail">Retail</option>
+                    <option value="distributor">Distributor</option>
+                    <option value="custom">Custom</option>
+                  </select>
                 </div>
               </div>
+              <SearchableDropdown
+                className="[&_input]:h-8"
+                ref={customerSearchRef}
+                placeholder="Search customers by name, email, or business..."
+                items={customers}
+                onSelect={handleCustomerSelect}
+                onSearch={handleCustomerSearch}
+                displayKey={customerDisplayKey}
+                selectedItem={selectedCustomer}
+                loading={customersLoading || customersFetching}
+                emptyMessage={customerSearchTerm.length > 0 ? "No customers found" : "Start typing to search customers..."}
+                value={customerSearchTerm}
+                rightContentKey="city"
+              />
             </div>
-          ) : (
-            <div className="hidden lg:block">
-              {/* Empty space to maintain layout consistency */}
-            </div>
-          )}
+          </div>
+
+          {/* Customer Information - Right Side */}
+          <div className="lg:w-auto w-full lg:max-w-md lg:self-end">
+            {selectedCustomer ? (() => {
+              const balanceNum = Number(displayBalance);
+              const totalBalance = (isNaN(balanceNum) || balanceNum === null || balanceNum === undefined) ? 0 : balanceNum;
+              const creditLimitNum = Math.max(0, Number(displayCreditLimit) || 0);
+              const availableCreditNum = Math.max(0, creditLimitNum - totalBalance);
+              const isPayable = totalBalance < 0;
+              const isReceivable = totalBalance > 0;
+
+              return (
+                <div className="bg-gray-50 border border-gray-200 rounded-xl h-8 px-2 flex items-center">
+                  <div className="flex items-center gap-2 text-xs whitespace-nowrap overflow-hidden">
+                    <span className="text-gray-500 uppercase font-semibold">Balance</span>
+                    <span className={`font-bold ${isPayable ? 'text-red-600' : isReceivable ? 'text-green-600' : 'text-gray-600'}`}>
+                      {isPayable ? '-' : ''}{Math.abs(totalBalance).toFixed(2)}
+                    </span>
+                    <span className="text-gray-400">|</span>
+                    <span className="text-gray-500 uppercase font-semibold">Credit</span>
+                    <span className={`font-bold ${creditLimitNum > 0 ? (
+                      totalBalance >= creditLimitNum * 0.9 ? 'text-red-600' : totalBalance >= creditLimitNum * 0.7 ? 'text-yellow-600' : 'text-blue-600'
+                    ) : 'text-gray-600'}`}>
+                      {creditLimitNum.toFixed(2)}
+                      {creditLimitNum > 0 && totalBalance >= creditLimitNum * 0.9 && <span className="ml-1">⚠️</span>}
+                    </span>
+                    <span className="text-gray-400">|</span>
+                    <span className="text-gray-500 uppercase font-semibold">Available</span>
+                    <span className={`font-bold ${creditLimitNum > 0 ? (
+                      availableCreditNum <= creditLimitNum * 0.1 ? 'text-red-600' : availableCreditNum <= creditLimitNum * 0.3 ? 'text-yellow-600' : 'text-green-600'
+                    ) : 'text-gray-600'}`}>
+                      {availableCreditNum.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })() : (
+              <div className="hidden lg:flex items-center justify-center h-full px-8 border-2 border-dashed border-gray-100 rounded-xl">
+                <span className="text-gray-400 text-sm font-medium italic">No customer selected</span>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -2268,7 +2223,7 @@ const SalesOrders = ({ tabId }) => {
         </div>
         <div className="card-content">
           {/* Product Search */}
-          <div className="mb-6">
+          <div className="mb-2">
             <ProductSearch
               onAddProduct={addToCartFromProductSearch}
               selectedCustomer={selectedCustomer}
@@ -2306,12 +2261,12 @@ const SalesOrders = ({ tabId }) => {
 
           {/* Cart Items */}
           {formData.items.length === 0 ? (
-            <div className="p-8 text-center text-gray-500 border-t border-gray-200">
+            <div className="p-8 text-center text-gray-500">
               <ShoppingCart className="mx-auto h-12 w-12 text-gray-400" />
               <p className="mt-2">No items in cart</p>
             </div>
           ) : (
-            <div className="border-t border-gray-200 pt-6 overflow-x-hidden">
+            <div className="pt-2 overflow-x-hidden">
               {isLastPricesApplied && Object.keys(priceStatus).length > 0 && (
                 <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mb-3 text-xs">
                   <span className="text-gray-600 font-medium">Price Status:</span>
@@ -2329,31 +2284,6 @@ const SalesOrders = ({ tabId }) => {
                   </div>
                 </div>
               )}
-              <CartTableHeader
-                className={`hidden md:grid gap-x-1 items-center pb-2 border-b border-gray-300 mb-2 ${dualUnitShowBoxInputEnabled
-                  ? (
-                    showCostPrice && canViewCostPrice
-                      ? 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5rem_5.35rem_5.35rem_2.25rem]'
-                      : 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
-                  )
-                  : (
-                    showCostPrice && canViewCostPrice
-                      ? 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5rem_5.35rem_5.35rem_2.25rem]'
-                      : 'grid-cols-[2.25rem_minmax(0,1fr)_5.35rem_5.35rem_5.35rem_5.35rem_2.25rem]'
-                  )
-                  }`}
-                columns={[
-                  { key: 'sno', label: 'S.NO', labelClassName: 'text-xs font-semibold text-gray-600 uppercase text-left' },
-                  { key: 'product', label: 'Product' },
-                  ...(dualUnitShowBoxInputEnabled ? [{ key: 'box', label: 'Box' }] : []),
-                  { key: 'stock', label: 'Stock' },
-                  { key: 'qty', label: 'Qty' },
-                  ...(showCostPrice && canViewCostPrice ? [{ key: 'cost', label: 'Cost' }] : []),
-                  { key: 'rate', label: 'Rate' },
-                  { key: 'total', label: 'Total', labelClassName: 'text-xs font-semibold text-gray-600 uppercase block text-center' },
-                  { key: 'action', label: 'Action', wrapperClassName: 'min-w-0 flex justify-end', labelClassName: 'text-xs font-semibold text-gray-600 uppercase text-right' },
-                ]}
-              />
               <div
                 ref={soCartScrollRef}
                 className={
@@ -2914,6 +2844,89 @@ const SalesOrders = ({ tabId }) => {
             className={`mt-0 ml-0 max-w-none min-w-0 w-full border-slate-200 bg-none bg-slate-50 shadow-sm ring-0 ${showSalesOrderDetailsFields ? 'order-2' : 'order-1'
               }`}
           >
+            <OrderSummaryBar>
+              <div className="flex items-center gap-3">
+                {selectedOrder ? (
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      onClick={cancelEdit}
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-slate-600 hover:bg-slate-100"
+                    >
+                      Cancel
+                    </Button>
+                    <LoadingButton
+                      onClick={handleUpdate}
+                      isLoading={updating}
+                      disabled={updating || formData.items.length === 0}
+                      variant="default"
+                      size="sm"
+                      className="bg-slate-900 hover:bg-slate-800 text-white border-none h-8 px-4 font-bold"
+                    >
+                      <Receipt className="h-4 w-4 mr-2" />
+                      {updating ? 'Updating...' : 'Update SO'}
+                    </LoadingButton>
+                  </div>
+                ) : (
+                  <Button
+                    onClick={handleCreate}
+                    disabled={creating || formData.items.length === 0}
+                    variant="default"
+                    size="sm"
+                    className="bg-slate-900 hover:bg-slate-800 text-white border-none h-8 px-4 font-bold"
+                  >
+                    <Receipt className="h-4 w-4 mr-2" />
+                    {creating ? 'Creating...' : 'Create SO'}
+                  </Button>
+                )}
+
+                <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                  {formData.items.length > 0 && (
+                    <Button
+                      onClick={resetForm}
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-8 w-8 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                      title="Clear Cart"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                  {formData.items.length > 0 && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="h-8 w-8 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                          title="Print Options"
+                        >
+                          <Printer className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setDirectPrintOrder(buildDraftSalesOrderPrintOrder());
+                          }}
+                        >
+                          <Printer className="h-4 w-4 mr-2" />
+                          Print
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => handlePrint(buildDraftSalesOrderPrintOrder())}
+                        >
+                          <Eye className="h-4 w-4 mr-2" />
+                          Print Preview
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                </div>
+              </div>
+            </OrderSummaryBar>
             <OrderSummaryContent className="bg-none bg-slate-50">
               <div className="space-y-2">
                 {totalDiscount > 0 && (
@@ -2976,91 +2989,6 @@ const SalesOrders = ({ tabId }) => {
                 )}
               </div>
 
-              <OrderCheckoutActions>
-                {formData.items.length > 0 && (
-                  <Button
-                    onClick={resetForm}
-                    variant="secondary"
-                    className="flex-1"
-                  >
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    Clear Cart
-                  </Button>
-                )}
-                {formData.items.length > 0 && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="secondary" className="flex-1">
-                        <Printer className="h-4 w-4 mr-2" />
-                        Print
-                        <ChevronDown className="h-4 w-4 ml-2" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start">
-                      <DropdownMenuItem
-                        onClick={() => {
-                          setDirectPrintOrder(buildDraftSalesOrderPrintOrder());
-                        }}
-                      >
-                        <Printer className="h-4 w-4 mr-2" />
-                        Print
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => handlePrint(buildDraftSalesOrderPrintOrder())}
-                      >
-                        <Eye className="h-4 w-4 mr-2" />
-                        Print Preview
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-                <div className="flex items-center space-x-2 px-2">
-                  <Input
-                    type="checkbox"
-                    id="soAutoPrint"
-                    checked={autoPrint}
-                    onChange={(e) => setAutoPrint(e.target.checked)}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                  />
-                  <label htmlFor="soAutoPrint" className="text-sm font-medium text-gray-700 cursor-pointer">
-                    Print after sale
-                  </label>
-                </div>
-                {selectedOrder ? (
-                  <>
-                    <Button
-                      type="button"
-                      onClick={cancelEdit}
-                      variant="secondary"
-                      className="flex-1"
-                    >
-                      Cancel Edit
-                    </Button>
-                    <LoadingButton
-                      onClick={handleUpdate}
-                      isLoading={updating}
-                      disabled={updating || formData.items.length === 0}
-                      variant="default"
-                      size="lg"
-                      className="flex-2"
-                    >
-                      <Receipt className="h-4 w-4 mr-2" />
-                      {updating ? 'Updating...' : 'Update Sales Order'}
-                    </LoadingButton>
-                  </>
-                ) : (
-                  <Button
-                    onClick={handleCreate}
-                    disabled={creating || formData.items.length === 0}
-                    variant="default"
-                    size="lg"
-                    className="flex-2"
-                  >
-                    <Receipt className="h-4 w-4 mr-2" />
-                    {creating ? 'Creating...' : 'Create Sales Order'}
-                  </Button>
-                )}
-              </OrderCheckoutActions>
             </OrderSummaryContent>
           </OrderCheckoutCard>
         </div>

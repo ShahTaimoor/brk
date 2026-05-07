@@ -220,6 +220,7 @@ app.use('/api/cities', require('./routes/cities'));
 app.use('/api/purchase-orders', require('./routes/purchaseOrders'));
 app.use('/api/inventory-alerts', require('./routes/inventoryAlerts'));
 app.use('/api/purchase-invoices', require('./routes/purchaseInvoices'));
+app.use('/api/market-prices', require('./routes/marketPrices'));
 app.use('/api/purchase-returns', require('./routes/purchaseReturns'));
 app.use('/api/sale-returns', require('./routes/saleReturns'));
 app.use('/api/sales-orders', require('./routes/salesOrders'));
@@ -263,6 +264,7 @@ app.use('/api/investors', require('./routes/investors'));
 app.use('/api/drop-shipping', require('./routes/dropShipping'));
 app.use('/api/customer-balances', require('./routes/customerBalances'));
 app.use('/api/supplier-balances', require('./routes/supplierBalances'));
+app.use('/api/presence', require('./routes/presence'));
 
 // Health check endpoint (API version) - PostgreSQL only
 app.get('/api/health', (req, res) => {
