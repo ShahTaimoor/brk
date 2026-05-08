@@ -458,10 +458,27 @@ class SalesService {
     if (amountPaid === 0 && normalizedPaymentStatus === 'paid') {
       amountPaid = parseFloat(order.total) || 0;
     }
+    let bankAccount = null;
+    try {
+      const bankResult = await query(
+        `SELECT bank_id
+         FROM account_ledger
+         WHERE reference_type = 'sale_payment'
+           AND reference_id::text = $1
+           AND bank_id IS NOT NULL
+           AND status = 'completed'
+           AND reversed_at IS NULL
+         ORDER BY transaction_date DESC, created_at DESC
+         LIMIT 1`,
+        [String(orderId)]
+      );
+      bankAccount = bankResult.rows[0]?.bank_id || null;
+    } catch (_) { /* ignore */ }
     order.payment = {
       ...(order.payment || {}),
       amountPaid,
       method: order.payment?.method || order.payment_method || 'N/A',
+      bankAccount,
       status: order.payment?.status || order.payment_status || 'pending',
     };
 
@@ -483,29 +500,17 @@ class SalesService {
    * @returns {Promise<object>}
    */
   async getPeriodSummary(dateFrom, dateTo) {
-    const raw = await salesRepository.findByDateRange(dateFrom, dateTo);
-    const orders = Array.isArray(raw) ? raw : [];
-
-    const totalRevenue = orders.reduce((sum, order) => sum + (parseFloat(order?.total) || 0), 0);
-    const totalOrders = orders.length;
-    const totalItems = orders.reduce((sum, order) => {
-      const items = Array.isArray(order?.items) ? order.items : [];
-      return sum + items.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0);
-    }, 0);
+    const agg = await salesRepository.getDashboardSaleAggregates(dateFrom, dateTo);
+    const totalRevenue = agg.totalRevenue;
+    const totalOrders = agg.totalOrders;
+    const totalItems = agg.totalItems;
     const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+    const totalDiscounts = agg.totalDiscounts;
 
-    // Calculate discounts
-    const totalDiscounts = orders.reduce((sum, order) =>
-      sum + (parseFloat(order?.discount) || 0), 0);
-
-    // Calculate by payment status (orderType not in PostgreSQL schema, using payment_status)
     const revenueByPaymentStatus = {
-      paid: orders.filter(o => o && (o.payment_status === 'paid'))
-        .reduce((sum, order) => sum + (parseFloat(order?.total) || 0), 0),
-      pending: orders.filter(o => o && (o.payment_status === 'pending'))
-        .reduce((sum, order) => sum + (parseFloat(order?.total) || 0), 0),
-      partial: orders.filter(o => o && (o.payment_status === 'partial'))
-        .reduce((sum, order) => sum + (parseFloat(order?.total) || 0), 0)
+      paid: agg.revPaid,
+      pending: agg.revPending,
+      partial: agg.revPartial
     };
 
     return {
@@ -514,8 +519,16 @@ class SalesService {
       totalItems,
       averageOrderValue,
       totalDiscounts,
-      revenueByType: {}, // Not available in PostgreSQL schema
-      ordersByType: {}, // Not available in PostgreSQL schema
+      revenueByType: {
+        retail: agg.revRetail,
+        wholesale: agg.revWholesale
+      },
+      ordersByType: {
+        retail: agg.cntRetail,
+        wholesale: agg.cntWholesale,
+        return: agg.cntReturn,
+        exchange: agg.cntExchange
+      },
       revenueByPaymentStatus
     };
   }
@@ -772,6 +785,7 @@ class SalesService {
           oldAmountPaid: 0,
           newAmountPaid: amountPaidAtCreate,
           paymentMethod: payment?.method || 'cash',
+          bankId: payment?.method === 'bank' ? (payment?.bankAccount || null) : null,
           createdBy: user?.id || user?._id
         }, { client });
       }

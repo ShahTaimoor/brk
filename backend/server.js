@@ -38,64 +38,9 @@ process.on('uncaughtException', (error) => {
 const app = express();
 app.set('trust proxy', true);
 
+// Cron/scheduler jobs intentionally disabled by request.
 const initializeScheduledJobs = () => {
-  try {
-    // Data integrity validation (daily at 2 AM)
-    const dataIntegrityService = require('./services/dataIntegrityService');
-    const cron = require('node-cron');
-    cron.schedule('0 2 * * *', async () => {
-      try {
-        logger.info('Running scheduled data integrity validation...');
-        const results = await dataIntegrityService.runAllValidations();
-        if (results.hasIssues) {
-          logger.warn(`Data integrity issues detected: ${results.totalIssues} total issues`);
-        } else {
-          logger.info('Data integrity validation passed');
-        }
-      } catch (error) {
-        logger.error('Error in scheduled data integrity validation:', error);
-      }
-    });
-
-    // Financial validation (hourly) - stub, original removed with MongoDB migration
-    const financialValidationService = require('./services/financialValidationService');
-    financialValidationService.scheduleValidation();
-    logger.info('Financial validation scheduler started');
-
-    // Performance monitoring
-    const performanceMonitoringService = require('./services/performanceMonitoringService');
-    performanceMonitoringService.scheduleMonitoring();
-    logger.info('Performance monitoring scheduler started');
-
-    // Reconciliation jobs (if exists)
-    try {
-      const reconciliationJobs = require('./jobs/reconciliationJobs');
-      if (reconciliationJobs) {
-        if (typeof reconciliationJobs.start === 'function') {
-          reconciliationJobs.start();
-          logger.info('Reconciliation jobs started');
-        } else if (typeof reconciliationJobs.startReconciliationJobs === 'function') {
-          reconciliationJobs.startReconciliationJobs();
-          logger.info('Reconciliation jobs started');
-        }
-      }
-    } catch (error) {
-      logger.warn('Reconciliation jobs not available:', error.message);
-    }
-
-    // Maintenance jobs (if exists)
-    try {
-      const maintenanceJobs = require('./jobs/maintenanceJobs');
-      if (maintenanceJobs && typeof maintenanceJobs.start === 'function') {
-        maintenanceJobs.start();
-        logger.info('Maintenance jobs started');
-      }
-    } catch (error) {
-      logger.warn('Maintenance jobs not available:', error.message);
-    }
-  } catch (error) {
-    logger.error('Error initializing scheduled jobs:', error);
-  }
+  logger.info('Scheduled jobs are disabled.');
 };
 
 // Security middleware
@@ -152,7 +97,9 @@ app.use(cors({
   origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Idempotency-Key', 'Idempotency-Key', 'idempotency-key'],
-  credentials: true
+  credentials: true,
+  maxAge: 86400,
+  optionsSuccessStatus: 204
 }));
 
 // Body parsing middleware
@@ -237,6 +184,7 @@ app.use('/api/returns', require('./routes/returns')); // Legacy route - kept for
 app.use('/api/recurring-expenses', require('./routes/recurringExpenses'));
 app.use('/api/balance-sheets', require('./routes/balanceSheets'));
 app.use('/api/chart-of-accounts', require('./routes/chartOfAccounts'));
+app.use('/api/account-categories', require('./routes/accountCategories'));
 app.use('/api/account-ledger', require('./routes/accountLedger'));
 app.use('/api/journal-vouchers', require('./routes/journalVouchers'));
 app.use('/api/discounts', require('./routes/discounts'));
