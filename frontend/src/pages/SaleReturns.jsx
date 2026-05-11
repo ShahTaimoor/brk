@@ -15,7 +15,8 @@ import {
   User,
   ShoppingCart,
   Trash2,
-  Receipt
+  Receipt,
+  Printer
 } from 'lucide-react';
 import {
   useGetSaleReturnsQuery,
@@ -63,6 +64,7 @@ const SaleReturns = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [selectedReturn, setSelectedReturn] = useState(null);
+  const [autoOpenPrint, setAutoOpenPrint] = useState(false);
   const [selectedSale, setSelectedSale] = useState(null);
   const [searchSuggestions, setSearchSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -636,6 +638,13 @@ const SaleReturns = () => {
 
   // Handle return detail view
   const handleReturnSelect = (returnItem) => {
+    setAutoOpenPrint(false);
+    setSelectedReturn(returnItem);
+    setShowDetailModal(true);
+  };
+
+  const handleReturnPrint = (returnItem) => {
+    setAutoOpenPrint(true);
     setSelectedReturn(returnItem);
     setShowDetailModal(true);
   };
@@ -649,10 +658,6 @@ const SaleReturns = () => {
     setReturnAmount(0);
   };
 
-  useEffect(() => {
-    const subtotal = returnCart.reduce((sum, item) => sum + (item.quantity || 1) * (item.originalPrice || 0), 0);
-    setReturnAmount(subtotal);
-  }, [returnCart]);
 
   // Format currency
   const formatCurrency = (amount) => {
@@ -1104,13 +1109,21 @@ const SaleReturns = () => {
                         {formatDate(returnItem.returnDate)}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm">
-                        <button
-                          onClick={() => handleReturnSelect(returnItem)}
-                          className="text-blue-600 hover:text-blue-800 flex items-center gap-1"
-                        >
-                          <Eye className="h-4 w-4" />
-                          View
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleReturnSelect(returnItem)}
+                            className="text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                          >
+                            <Eye className="h-4 w-4" />
+                            View
+                          </button>
+                          <button
+                            onClick={() => handleReturnPrint(returnItem)}
+                            className="text-green-600 hover:text-green-800 flex items-center gap-1"
+                          >
+                            <Printer className="h-4 w-4" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1142,9 +1155,11 @@ const SaleReturns = () => {
           onClose={() => {
             setShowDetailModal(false);
             setSelectedReturn(null);
+            setAutoOpenPrint(false);
           }}
           returnData={selectedReturn}
           onUpdate={refetchReturns}
+          autoOpenPrint={autoOpenPrint}
         />
       )}
 
