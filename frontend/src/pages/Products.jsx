@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Plus,
   Search,
@@ -9,6 +9,9 @@ import {
   Printer,
   Download,
   MoreHorizontal,
+  FileSpreadsheet,
+  FileText,
+  FileUp,
 } from 'lucide-react';
 import {
   useGetProductsQuery,
@@ -29,6 +32,7 @@ import { DeleteConfirmationDialog } from '../components/ConfirmationDialog';
 import { useDeleteConfirmation } from '../hooks/useConfirmation';
 
 import ProductFilters from '../components/ProductFilters';
+import { PageHeader } from '../components/layout/PageHeader';
 import { useTab } from '../contexts/TabContext';
 import { useBulkOperations } from '../hooks/useBulkOperations';
 import BulkOperationsBar from '../components/BulkOperationsBar';
@@ -85,6 +89,9 @@ export const Products = () => {
   const [showNotes, setShowNotes] = useState(false);
   const [notesEntity, setNotesEntity] = useState(null);
   const { openTab } = useTab();
+  const excelExportRef = useRef(null);
+  const pdfExportRef = useRef(null);
+  const excelImportRef = useRef(null);
 
   const debouncedSearch = useDebouncedValue(searchTerm, 350);
 
@@ -301,13 +308,10 @@ export const Products = () => {
 
   return (
     <div className="space-y-4 sm:space-y-6 w-full max-w-full min-w-0">
-      <div className="flex items-center justify-between gap-2 min-w-0">
-        <div className="min-w-0 pr-2">
-          <h1 className="text-lg sm:text-3xl font-bold text-gray-900 truncate">Products</h1>
-          <p className="hidden sm:block text-sm sm:text-base text-gray-600 mt-1">Manage your product catalog</p>
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-end gap-2 sm:gap-3 overflow-x-auto">
+      <PageHeader
+        title="Products"
+        subtitle="Manage your product catalog"
+        actions={<>
           <Button
             onClick={() => productOps.handleAdd()}
             variant="default"
@@ -319,16 +323,22 @@ export const Products = () => {
             <span className="sm:hidden uppercase">ADD</span>
           </Button>
           <ExcelExportButton
+            ref={excelExportRef}
             getData={getExportData}
             label="Export"
+            className="hidden sm:flex"
           />
           <PdfExportButton
+            ref={pdfExportRef}
             getData={getExportData}
             label="PDF"
+            className="hidden sm:flex"
           />
           <ExcelImportButton
+            ref={excelImportRef}
             onDataImported={handleImportData}
             label="Import"
+            className="hidden sm:flex"
           />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -342,6 +352,28 @@ export const Products = () => {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem 
+                onSelect={(e) => { e.preventDefault(); excelExportRef.current?.handleExport(); }}
+                className="sm:hidden"
+              >
+                <FileSpreadsheet className="h-4 w-4 mr-2 text-green-600" />
+                Export to Excel
+              </DropdownMenuItem>
+              <DropdownMenuItem 
+                onSelect={(e) => { e.preventDefault(); pdfExportRef.current?.handleExport(); }}
+                className="sm:hidden"
+              >
+                <FileText className="h-4 w-4 mr-2 text-red-600" />
+                Export to PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem 
+                onSelect={(e) => { e.preventDefault(); excelImportRef.current?.handleButtonClick(); }}
+                className="sm:hidden"
+              >
+                <FileUp className="h-4 w-4 mr-2 text-blue-600" />
+                Import from Excel
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="sm:hidden" />
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
@@ -392,9 +424,8 @@ export const Products = () => {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          </div>
-        </div>
-      </div>
+        </>}
+      />
 
       <div className="w-full">
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">

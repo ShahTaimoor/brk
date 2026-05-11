@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input';
 import { LoadingButton } from '@/components/LoadingSpinner';
 import BarcodeScanner from '@/components/BarcodeScanner';
 import BaseModal from '@/components/BaseModal';
+import { useSensitiveDataPermissions } from '@/hooks/useSensitiveDataPermissions';
 import { compressImageFileToDataUrl } from '@/utils/imageCompress';
 
 /** Max rows shown in dropdown (server search caps higher; we slice in hook). */
@@ -36,7 +37,10 @@ function ProductSearchComponent({
   itemsOverride = null,
   loadingOverride = null,
   emptyMessageOverride = null,
+  onFocusReady,
 }) {
+  const { canViewStock } = useSensitiveDataPermissions();
+
   const formatDisplayNumber = (value) => {
     const num = Number(value);
     if (!Number.isFinite(num)) return '0';
@@ -102,6 +106,16 @@ function ProductSearchComponent({
       onRefetchReady(refreshProductSearchCache);
     }
   }, [onRefetchReady, refreshProductSearchCache]);
+
+  const focusSearchInput = useCallback(() => {
+    productSearchRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(() => {
+    if (typeof onFocusReady === 'function') {
+      onFocusReady(focusSearchInput);
+    }
+  }, [onFocusReady, focusSearchInput]);
 
   const getCostPrice = (product) => {
     if (!product) return 0;
@@ -300,17 +314,23 @@ function ProductSearchComponent({
     let lastKeyTime = Date.now();
 
     const handleGlobalKeyDown = (e) => {
+      const key = e.key;
+      // Some synthetic events / browsers may omit `key`
+      if (key == null) return;
+
       // Ignore modifier keys
-      if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
+      if (['Control', 'Alt', 'Shift', 'Meta'].includes(key)) return;
 
       const currentTime = Date.now();
       const timeDiff = currentTime - lastKeyTime;
       lastKeyTime = currentTime;
 
+      const isPrintableChar = typeof key === 'string' && key.length === 1;
+
       // Scanners usually send keys very fast (<30ms between keys)
       // If time between keys is short, it's likely a scanner
       if (timeDiff < 50) {
-        if (e.key === 'Enter') {
+        if (key === 'Enter') {
           if (buffer.length >= 4) {
             e.preventDefault();
             e.stopPropagation();
@@ -320,14 +340,14 @@ function ProductSearchComponent({
           } else {
             buffer = '';
           }
-        } else if (e.key.length === 1) {
-          buffer += e.key;
+        } else if (isPrintableChar) {
+          buffer += key;
         }
       } else {
         // Too slow, probably manual typing. Clear buffer.
         // But if it was a single character after a long pause, it might be the START of a scan
-        if (e.key.length === 1) {
-          buffer = e.key;
+        if (isPrintableChar) {
+          buffer = key;
         } else {
           buffer = '';
         }
@@ -611,9 +631,11 @@ function ProductSearchComponent({
           </div>
         </div>
         <div className="flex items-center space-x-4">
-          <div className={`text-sm ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-orange-600' : 'text-gray-600'}`}>
-            Stock: {inventory.currentStock || 0}
-          </div>
+          {canViewStock && (
+            <div className={`text-sm ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-orange-600' : 'text-gray-600'}`}>
+              Stock: {inventory.currentStock || 0}
+            </div>
+          )}
           {showCostPrice && hasCostPricePermission && (purchasePrice !== undefined && purchasePrice !== null) && (
             <div className="text-sm text-red-600 font-medium">Cost: {Math.round(purchasePrice)}</div>
           )}
@@ -770,7 +792,7 @@ function ProductSearchComponent({
           {/* Fields Grid - 2 columns on mobile */}
           <div className="grid grid-cols-2 gap-3">
             {/* Stock */}
-            {!isManualMode && (
+            {!isManualMode && canViewStock && (
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">
                   Stock

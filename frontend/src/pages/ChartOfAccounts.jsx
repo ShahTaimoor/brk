@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   Plus, 
   Edit, 
@@ -13,8 +13,17 @@ import {
   X,
   Eye,
   EyeOff,
-  RefreshCw
+  RefreshCw,
+  MoreHorizontal,
+  FileSpreadsheet,
+  FileText
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from 'sonner';
 import {
   useGetAccountsQuery,
@@ -32,6 +41,8 @@ import { Textarea } from '@/components/ui/textarea';
 import PaginationControls from '../components/PaginationControls';
 import ExcelExportButton from '../components/ExcelExportButton';
 import PdfExportButton from '../components/PdfExportButton';
+import { DeleteConfirmationDialog } from '../components/ConfirmationDialog';
+import { useDeleteConfirmation } from '../hooks/useConfirmation';
 
 const AccountTypeBadge = ({ type }) => {
   const config = {
@@ -446,6 +457,12 @@ const AccountForm = ({ account, onSave, onCancel, isOpen, existingAccounts, pres
 
 // Category Management Component
 const CategoryManagement = ({ categories, onCategoryCreated, onCategoryUpdated, onCategoryDeleted }) => {
+  const {
+    confirmation: deleteConfirmation,
+    confirmDelete,
+    handleConfirm: handleDeleteConfirm,
+    handleCancel: handleDeleteCancel,
+  } = useDeleteConfirmation();
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [autoGenerateCode, setAutoGenerateCode] = useState(true); // Auto-generate for new categories
@@ -520,16 +537,17 @@ const CategoryManagement = ({ categories, onCategoryCreated, onCategoryUpdated, 
     setIsFormOpen(true);
   };
 
-  const handleDelete = async (category) => {
-    if (window.confirm(`Are you sure you want to delete category "${category.name}"?`)) {
+  const handleDelete = (category) => {
+    confirmDelete(category.name, 'Category', async () => {
       try {
         await accountCategoriesAPI.deleteCategory(category._id);
         onCategoryDeleted();
         toast.success('Category deleted successfully!');
       } catch (error) {
         handleApiError(error, 'Category Deletion');
+        throw error;
       }
-    }
+    });
   };
 
   return (
@@ -761,11 +779,30 @@ const CategoryManagement = ({ categories, onCategoryCreated, onCategoryUpdated, 
           </div>
         </div>
       )}
+
+      <DeleteConfirmationDialog
+        isOpen={deleteConfirmation.isOpen}
+        onClose={handleDeleteCancel}
+        onConfirm={handleDeleteConfirm}
+        itemName={deleteConfirmation.message?.match(/"([^"]*)"/)?.[1] || ''}
+        itemType="Category"
+        isLoading={deleteConfirmation.isLoading}
+      />
     </div>
   );
 };
 
 export const ChartOfAccounts = () => {
+  const {
+    confirmation: deleteConfirmation,
+    confirmDelete,
+    handleConfirm: handleDeleteConfirm,
+    handleCancel: handleDeleteCancel,
+  } = useDeleteConfirmation();
+  // Refs for responsive actions
+  const excelExportRef = useRef(null);
+  const pdfExportRef = useRef(null);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -985,16 +1022,17 @@ export const ChartOfAccounts = () => {
     setIsFormOpen(true);
   };
 
-  const handleDelete = async (account) => {
-    if (window.confirm(`Are you sure you want to delete account "${account.accountName}"?`)) {
+  const handleDelete = (account) => {
+    confirmDelete(account.accountName, 'Account', async () => {
       try {
         await deleteAccount(account._id).unwrap();
         toast.success('Account deleted successfully!');
         refetchAccounts();
       } catch (error) {
         handleApiError(error, 'Account Deletion');
+        throw error;
       }
-    }
+    });
   };
 
   const handleAddNew = () => {
@@ -1051,34 +1089,64 @@ export const ChartOfAccounts = () => {
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Chart of Accounts</h1>
           <p className="text-sm sm:text-base text-gray-600 mt-1">Manage your accounting structure and account heads</p>
         </div>
-        <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 w-full sm:w-auto">
+        <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 w-full sm:w-auto items-stretch sm:items-center">
           <Button
             onClick={() => setShowCategoryManagement(!showCategoryManagement)}
             variant="secondary"
             size="default"
-            className="flex items-center justify-center gap-2"
+            className="flex items-center justify-center gap-2 h-10"
           >
             <FolderTree className="h-4 w-4" />
             <span className="hidden sm:inline">{showCategoryManagement ? 'Hide Categories' : 'Manage Categories'}</span>
             <span className="sm:hidden">Categories</span>
           </Button>
-          <ExcelExportButton 
-            getData={getExportData}
-            label="Export"
-          />
-          <PdfExportButton 
-            getData={getExportData}
-            label="PDF"
-          />
-          <Button
-            onClick={handleAddNew}
-            variant="default"
-            size="default"
-            className="flex items-center justify-center gap-2"
-          >
-            <Plus className="h-4 w-4" />
-            Create Account
-          </Button>
+
+          {/* Desktop Export Buttons */}
+          <div className="hidden sm:flex items-center gap-2">
+            <ExcelExportButton 
+              ref={excelExportRef}
+              getData={getExportData}
+              label="Export"
+            />
+            <PdfExportButton 
+              ref={pdfExportRef}
+              getData={getExportData}
+              label="PDF"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Button
+              onClick={handleAddNew}
+              variant="default"
+              size="default"
+              className="flex-1 sm:flex-none flex items-center justify-center gap-2 h-10"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Create Account</span>
+            </Button>
+
+            {/* Mobile Actions Dropdown */}
+            <div className="sm:hidden">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon" className="h-10 w-10 border-gray-200 bg-white">
+                    <MoreHorizontal className="h-5 w-5 text-gray-600" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem onClick={() => excelExportRef.current?.handleExport()}>
+                    <FileSpreadsheet className="h-4 w-4 mr-2 text-green-600" />
+                    Excel Export
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => pdfExportRef.current?.handleExport()}>
+                    <FileText className="h-4 w-4 mr-2 text-red-600" />
+                    PDF Export
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1400,6 +1468,15 @@ export const ChartOfAccounts = () => {
         presetCategory={presetCategory}
         categories={categories}
         categoryOptions={categoryOptions}
+      />
+
+      <DeleteConfirmationDialog
+        isOpen={deleteConfirmation.isOpen}
+        onClose={handleDeleteCancel}
+        onConfirm={handleDeleteConfirm}
+        itemName={deleteConfirmation.message?.match(/"([^"]*)"/)?.[1] || ''}
+        itemType="Account"
+        isLoading={deleteConfirmation.isLoading}
       />
     </div>
   );

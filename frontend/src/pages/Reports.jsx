@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { flushSync } from 'react-dom';
 import { useTableRowVirtualizer, getVirtualTablePadding } from '../hooks/useTableRowVirtualizer';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { toast } from 'sonner';
@@ -18,8 +19,17 @@ import {
   FileSpreadsheet,
   Printer,
   Wallet,
-  Building2
+  Building2,
+  MoreHorizontal,
+  FileText
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Button } from '@/components/ui/button';
 import ExcelExportButton from '../components/ExcelExportButton';
 import PdfExportButton from '../components/PdfExportButton';
 import {
@@ -33,6 +43,7 @@ import {
   useGetBankCashSummaryQuery,
 } from '../store/services/reportsApi';
 import { useGetBanksQuery } from '../store/services/banksApi';
+import { useGetSuppliersQuery } from '../store/services/suppliersApi';
 import DateFilter from '../components/DateFilter';
 import PrintReportModal from '../components/PrintReportModal';
 import PageShell from '../components/PageShell';
@@ -42,6 +53,11 @@ import { useCompanyInfo } from '../hooks/useCompanyInfo';
 
 export const Reports = () => {
   const { companyInfo: companySettings } = useCompanyInfo();
+  
+  // Refs for responsive actions
+  const excelExportRef = useRef(null);
+  const pdfExportRef = useRef(null);
+
   const showCostPrice = companySettings.orderSettings?.showCostPrice !== false;
   const [activeTab, setActiveTab] = useState('party-balance');
   const [partyType, setPartyType] = useState('customer');
@@ -50,6 +66,10 @@ export const Reports = () => {
   const [financialType, setFinancialType] = useState('trial-balance');
   const [inventoryProductSearch, setInventoryProductSearch] = useState('');
   const debouncedInventoryProductSearch = useDebouncedValue(inventoryProductSearch, 400);
+  const [inventorySupplierId, setInventorySupplierId] = useState('');
+  const [inventorySortBy, setInventorySortBy] = useState('name');
+  const [topProductsSupplierId, setTopProductsSupplierId] = useState('');
+  const [topProductsSortBy, setTopProductsSortBy] = useState('revenue');
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
   /** Party Balances table: client-side paging */
   const [partyBalancePage, setPartyBalancePage] = useState(1);
@@ -72,16 +92,28 @@ export const Reports = () => {
     to: getCurrentDatePakistan()
   });
   const [selectedBankIds, setSelectedBankIds] = useState([]);
+  /** When true, report API calls append `nocache=1` so the backend skips the reports TTL cache (see reportsService.reportsCache). */
+  const [reportNoCache, setReportNoCache] = useState(false);
+
+  const reportNoCacheParams = reportNoCache ? { nocache: '1' } : {};
 
   const handleRefresh = () => {
-    refetchSummary();
-    if (activeTab === 'party-balance') refetchParty();
-    if (activeTab === 'sales') refetchSales();
-    if (activeTab === 'top-products') refetchProductReport();
-    if (activeTab === 'top-customers') refetchCustomerReport();
-    if (activeTab === 'inventory') refetchInventory();
-    if (activeTab === 'financial') refetchFinancial();
-    if (activeTab === 'bank-cash') refetchBankCash();
+    flushSync(() => {
+      setReportNoCache(true);
+    });
+
+    const promises = [refetchSummary()];
+    if (activeTab === 'party-balance') promises.push(refetchParty());
+    if (activeTab === 'sales') promises.push(refetchSales());
+    if (activeTab === 'top-products') promises.push(refetchProductReport());
+    if (activeTab === 'top-customers') promises.push(refetchCustomerReport());
+    if (activeTab === 'inventory') promises.push(refetchInventory());
+    if (activeTab === 'financial') promises.push(refetchFinancial());
+    if (activeTab === 'bank-cash') promises.push(refetchBankCash());
+
+    Promise.all(promises).finally(() => {
+      setReportNoCache(false);
+    });
   };
 
 
@@ -92,7 +124,8 @@ export const Reports = () => {
     refetch: refetchSummary
   } = useGetSummaryCardsQuery({
     dateFrom: dateRange.from,
-    dateTo: dateRange.to
+    dateTo: dateRange.to,
+    ...reportNoCacheParams
   });
 
   // Fetch Party Balance Report
@@ -101,7 +134,8 @@ export const Reports = () => {
     isLoading: partyLoading,
     refetch: refetchParty
   } = useGetPartyBalanceReportQuery({
-    partyType
+    partyType,
+    ...reportNoCacheParams
   }, {
     skip: activeTab !== 'party-balance'
   });
@@ -139,7 +173,8 @@ export const Reports = () => {
   } = useGetSalesReportQuery({
     dateFrom: dateRange.from,
     dateTo: dateRange.to,
-    groupBy: salesGroupBy
+    groupBy: salesGroupBy,
+    ...reportNoCacheParams
   }, {
     skip: activeTab !== 'sales'
   });
@@ -151,7 +186,10 @@ export const Reports = () => {
   } = useGetProductReportQuery({
     dateFrom: dateRange.from,
     dateTo: dateRange.to,
-    limit: 100
+    limit: 100,
+    ...(topProductsSupplierId.trim() ? { supplierId: topProductsSupplierId.trim() } : {}),
+    ...(topProductsSortBy === 'supplier' ? { sortBy: 'supplier' } : {}),
+    ...reportNoCacheParams
   }, {
     skip: activeTab !== 'top-products'
   });
@@ -163,7 +201,8 @@ export const Reports = () => {
   } = useGetCustomerReportQuery({
     dateFrom: dateRange.from,
     dateTo: dateRange.to,
-    limit: 100
+    limit: 100,
+    ...reportNoCacheParams
   }, {
     skip: activeTab !== 'top-customers'
   });
@@ -176,10 +215,19 @@ export const Reports = () => {
   } = useGetInventoryReportQuery({
     type: inventoryType,
     ...(debouncedInventoryProductSearch.trim() ? { search: debouncedInventoryProductSearch.trim() } : {}),
-    ...(inventoryType === 'stock-summary' && { dateFrom: dateRange.from, dateTo: dateRange.to })
+    ...(inventoryType === 'stock-summary' && { dateFrom: dateRange.from, dateTo: dateRange.to }),
+    ...(inventorySupplierId.trim() ? { supplierId: inventorySupplierId.trim() } : {}),
+    ...(inventorySortBy === 'supplier' ? { sortBy: 'supplier' } : {}),
+    ...reportNoCacheParams
   }, {
     skip: activeTab !== 'inventory'
   });
+
+  const { data: inventorySuppliersData } = useGetSuppliersQuery(
+    { limit: 500 },
+    { skip: activeTab !== 'inventory' && activeTab !== 'top-products' }
+  );
+  const inventorySupplierOptions = inventorySuppliersData?.data?.suppliers || inventorySuppliersData?.suppliers || [];
 
   // Fetch Financial Report
   const {
@@ -189,7 +237,8 @@ export const Reports = () => {
   } = useGetFinancialReportQuery({
     dateFrom: dateRange.from,
     dateTo: dateRange.to,
-    type: financialType
+    type: financialType,
+    ...reportNoCacheParams
   }, {
     skip: activeTab !== 'financial'
   });
@@ -211,7 +260,8 @@ export const Reports = () => {
     refetch: refetchBankCash
   } = useGetBankCashSummaryQuery({
     ...bankCashDateParams,
-    ...(selectedBankIds.length ? { bankIds: selectedBankIds.join(',') } : {})
+    ...(selectedBankIds.length ? { bankIds: selectedBankIds.join(',') } : {}),
+    ...reportNoCacheParams
   }, {
     skip: activeTab !== 'bank-cash'
   });
@@ -231,7 +281,7 @@ export const Reports = () => {
 
   useEffect(() => {
     setStockSummaryPage(1);
-  }, [inventoryType, dateRange.from, dateRange.to, debouncedInventoryProductSearch]);
+  }, [inventoryType, dateRange.from, dateRange.to, debouncedInventoryProductSearch, inventorySupplierId, inventorySortBy]);
 
   useEffect(() => {
     setStockSummaryPage(1);
@@ -367,6 +417,11 @@ export const Reports = () => {
         if (inventoryType === 'stock-summary') {
           return [
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
+            {
+              header: 'Supplier',
+              render: (row) => row.supplierName || '—',
+              key: 'supplierName'
+            },
             { header: 'Product Name', key: 'name' },
             ...(showCostPrice ? [
               { header: 'Last Purchase Price', render: (row) => (row.lastPurchasePrice || 0).toLocaleString(), align: 'right' },
@@ -402,6 +457,11 @@ export const Reports = () => {
         }
         const baseCols = [
           { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
+          {
+            header: 'Supplier',
+            render: (row) => row.supplierName || '—',
+            key: 'supplierName'
+          },
           { header: 'Product Name', key: 'name' },
           { header: 'SKU', key: 'sku' },
           { header: 'Category', key: 'categoryName' },
@@ -472,6 +532,11 @@ export const Reports = () => {
       case 'top-products':
         return [
           { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
+          {
+            header: 'Supplier',
+            render: (row) => row.supplierName || '—',
+            key: 'supplierName'
+          },
           { header: 'Product', render: (row) => row.product?.name || '—' },
           { header: 'SKU', render: (row) => row.product?.sku || '—' },
           { header: 'Qty sold', render: (row) => (row.totalQuantity || 0).toLocaleString(), align: 'right' },
@@ -486,6 +551,8 @@ export const Reports = () => {
             header: 'Customer',
             render: (row) =>
               row.customer?.businessName ||
+              row.customer?.business_name ||
+              row.customer?.name ||
               [row.customer?.firstName, row.customer?.lastName].filter(Boolean).join(' ') ||
               '—'
           },
@@ -667,7 +734,9 @@ export const Reports = () => {
     }
     if (activeTab === 'bank-cash') return 'Current Total';
     if (activeTab === 'top-products') {
-      if (title === 'Products with sales') return 'Distinct SKUs in period';
+      if (title === 'Products with sales') {
+        return topProductsSupplierId ? 'SKUs matching supplier filter' : 'Distinct SKUs matching filters';
+      }
       return 'In Selected Period';
     }
     if (activeTab === 'top-customers') {
@@ -728,6 +797,7 @@ export const Reports = () => {
           columns = [
             { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
             { header: 'Image', key: 'imageUrl', width: 12, type: 'image' },
+            { header: 'Supplier', key: 'supplierName', width: 28 },
             { header: 'Product Name', key: 'name', width: 40 },
             { header: 'SKU', key: 'sku', width: 15 },
             { header: 'Category', key: 'categoryName', width: 20 },
@@ -747,6 +817,7 @@ export const Reports = () => {
           columns = [
             { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
             { header: 'Image', key: 'imageUrl', width: 12, type: 'image' },
+            { header: 'Supplier', key: 'supplierName', width: 28 },
             { header: 'Product Name', key: 'name', width: 40 },
             { header: 'SKU', key: 'sku', width: 15 },
             { header: 'Category', key: 'categoryName', width: 20 },
@@ -791,6 +862,7 @@ export const Reports = () => {
       case 'top-products':
         columns = [
           { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+          { header: 'Supplier', key: 'supplierName', width: 28 },
           { header: 'Product', key: 'productName', width: 40 },
           { header: 'SKU', key: 'sku', width: 18 },
           { header: 'Qty sold', key: 'totalQuantity', width: 12, type: 'number' },
@@ -884,13 +956,13 @@ export const Reports = () => {
   return (
     <PageShell className="bg-gray-50" contentClassName="space-y-6 p-4 md:p-6">
       {/* Header & Global Filters */}
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Reporting Dashboard</h1>
           <p className="text-gray-500 text-sm">Real-time business analytics & financial reports</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap md:flex-nowrap items-center gap-3">
           {(activeTab !== 'bank-cash') && (activeTab !== 'inventory' || inventoryType === 'stock-summary') && (
             <DateFilter
               startDate={dateRange.from}
@@ -905,29 +977,59 @@ export const Reports = () => {
 
           <button
             onClick={handleRefresh}
-            className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-            title="Refresh Data"
+            className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors h-10 w-10 flex items-center justify-center border border-gray-200 bg-white"
+            title="Refresh data (bypasses server report cache for ~90s TTL)"
           >
             <RefreshCcw className={`h-5 w-5 ${(summaryLoading || partyLoading || salesLoading || productReportLoading || customerReportLoading || inventoryLoading || financialLoading || bankCashLoading) ? 'animate-spin' : ''}`} />
           </button>
 
-          <ExcelExportButton
-            getData={getExportData}
-            label="Export Report"
-            className="border-indigo-200 bg-white text-indigo-700 hover:border-indigo-500 hover:bg-indigo-50 transition-all font-semibold"
-          />
-          <PdfExportButton
-            getData={getExportData}
-            label="PDF Report"
-            className="border-indigo-200 bg-white text-indigo-700 hover:border-indigo-500 hover:bg-indigo-50 transition-all font-semibold"
-          />
-          <button
-            onClick={() => setIsPrintModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 border border-blue-200 bg-white text-blue-700 hover:border-blue-500 hover:bg-blue-50 transition-all font-semibold rounded-lg text-sm h-9"
-          >
-            <Printer className="h-4 w-4" />
-            Print Report
-          </button>
+          {/* Desktop Actions */}
+          <div className="hidden sm:flex items-center gap-2">
+            <ExcelExportButton
+              ref={excelExportRef}
+              getData={getExportData}
+              label="Excel"
+              className="h-10 border-indigo-200 bg-white text-indigo-700 hover:border-indigo-500 hover:bg-indigo-50 transition-all font-semibold"
+            />
+            <PdfExportButton
+              ref={pdfExportRef}
+              getData={getExportData}
+              label="PDF"
+              className="h-10 border-indigo-200 bg-white text-indigo-700 hover:border-indigo-500 hover:bg-indigo-50 transition-all font-semibold"
+            />
+            <button
+              onClick={() => setIsPrintModalOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 border border-blue-200 bg-white text-blue-700 hover:border-blue-500 hover:bg-blue-50 transition-all font-semibold rounded-lg text-sm h-10"
+            >
+              <Printer className="h-4 w-4" />
+              Print
+            </button>
+          </div>
+
+          {/* Mobile Actions Dropdown */}
+          <div className="sm:hidden">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" className="h-10 w-10 border-gray-200 bg-white">
+                  <MoreHorizontal className="h-5 w-5 text-gray-600" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem onClick={() => excelExportRef.current?.handleExport()}>
+                  <FileSpreadsheet className="h-4 w-4 mr-2 text-green-600" />
+                  Excel Export
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => pdfExportRef.current?.handleExport()}>
+                  <FileText className="h-4 w-4 mr-2 text-red-600" />
+                  PDF Export
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setIsPrintModalOpen(true)}>
+                  <Printer className="h-4 w-4 mr-2 text-blue-600" />
+                  Print Report
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </div>
 
@@ -975,18 +1077,8 @@ export const Reports = () => {
         })}
       </div>
 
-      {activeTab === 'party-balance' && (
-        <p className="text-sm text-gray-600 bg-amber-50/80 border border-amber-100 rounded-lg px-4 py-2.5">
-          The summary balance reflects <strong>current</strong> ledger positions for all{' '}
-          {partyType === 'customer' ? 'customers' : 'suppliers'}, not only transactions in the date range above. Use the detailed party table for movement in context.
-        </p>
-      )}
-      {(activeTab === 'top-products' || activeTab === 'top-customers') && (
-        <p className="text-sm text-gray-600 bg-slate-50 border border-slate-100 rounded-lg px-4 py-2.5">
-          Table lists up to <strong>100</strong> rows ranked by revenue for the selected dates. Card totals labeled “top 100 rows” sum only those visible rows; “distinct” counts include all qualifying{' '}
-          {activeTab === 'top-products' ? 'products' : 'customers'} in the period.
-        </p>
-      )}
+
+
 
       {/* Main Report Section */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
@@ -1051,20 +1143,9 @@ export const Reports = () => {
                     Suppliers
                   </button>
                 </div>
-                <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
-                  <span>
-                    {partyBalanceTotal} {partyType === 'customer' ? 'customers' : 'suppliers'} total
-                  </span>
-                  <span className="text-gray-400">·</span>
-                  <span>
-                    Rows {partyRangeStart}–{partyRangeEnd} of {partyBalanceTotal}
-                  </span>
-                </div>
+
               </div>
-              <p className="text-xs text-gray-500">
-                Net balance = opening balance + ledger activity on AR (1100) or AP (2000). Ledger Dr/Cr exclude
-                opening-balance postings so they match the general ledger.
-              </p>
+
 
               <div
                 ref={partyTableScrollRef}
@@ -1260,12 +1341,43 @@ export const Reports = () => {
 
           {activeTab === 'top-products' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between flex-wrap gap-4">
-                <p className="text-sm text-gray-600">
-                  Products ranked by revenue from invoice lines in the selected period (cancelled sales excluded).
-                </p>
-                <div className="text-sm text-gray-500">
-                  {(productReportData?.products?.length ?? 0)} rows · {(productReportData?.total ?? 0)} products with sales
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between flex-wrap">
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <Building2 className="h-4 w-4 text-gray-400 shrink-0" aria-hidden />
+                    <select
+                      value={topProductsSupplierId}
+                      onChange={(e) => setTopProductsSupplierId(e.target.value)}
+                      className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 min-w-[180px] max-w-[240px]"
+                    >
+                      <option value="">All suppliers</option>
+                      {inventorySupplierOptions.map((s) => {
+                        const id = s.id || s._id;
+                        const label = s.companyName || s.businessName || s.name || id;
+                        return (
+                          <option key={id} value={id}>
+                            {label}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="top-products-sort" className="text-xs font-medium text-gray-600 whitespace-nowrap">
+                      Sort
+                    </label>
+                    <select
+                      id="top-products-sort"
+                      value={topProductsSortBy}
+                      onChange={(e) => setTopProductsSortBy(e.target.value)}
+                      className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    >
+                      <option value="revenue">By revenue</option>
+                      <option value="supplier">By supplier, then revenue</option>
+                    </select>
+                  </div>
+
                 </div>
               </div>
               <div className="overflow-x-auto border border-gray-100 rounded-lg">
@@ -1310,12 +1422,8 @@ export const Reports = () => {
           {activeTab === 'top-customers' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between flex-wrap gap-4">
-                <p className="text-sm text-gray-600">
-                  Customers ranked by total invoice value in the selected period.
-                </p>
-                <div className="text-sm text-gray-500">
-                  {(customerReportData?.customers?.length ?? 0)} rows · {(customerReportData?.total ?? 0)} customers with orders
-                </div>
+
+
               </div>
               <div className="overflow-x-auto border border-gray-100 rounded-lg">
                 <table className="min-w-full divide-y divide-gray-200">
@@ -1396,20 +1504,48 @@ export const Reports = () => {
                       className="input w-full text-sm h-9"
                     />
                   </div>
-                  <div className="text-sm text-gray-500">
-                    {isInventoryPaginated ? (
-                      <span>
-                        {stockSummaryTotal} items
-                        {stockSummaryTotal > 0 ? (
-                          <span className="text-gray-400"> · Rows {stockRangeStart}–{stockRangeEnd} of {stockSummaryTotal}</span>
-                        ) : null}
-                      </span>
-                    ) : (
-                      <span>{inventoryReportData?.data?.length || 0} Items Found</span>
-                    )}
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="inventory-supplier" className="sr-only">
+                      Filter by supplier
+                    </label>
+                    <Building2 className="h-4 w-4 text-gray-400 shrink-0" aria-hidden />
+                    <select
+                      id="inventory-supplier"
+                      value={inventorySupplierId}
+                      onChange={(e) => setInventorySupplierId(e.target.value)}
+                      className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 min-w-[180px] max-w-[240px]"
+                    >
+                      <option value="">All suppliers</option>
+                      {inventorySupplierOptions.map((s) => {
+                        const id = s.id || s._id;
+                        const label = s.companyName || s.businessName || s.name || id;
+                        return (
+                          <option key={id} value={id}>
+                            {label}
+                          </option>
+                        );
+                      })}
+                    </select>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="inventory-sort" className="text-xs font-medium text-gray-600 whitespace-nowrap">
+                      Sort
+                    </label>
+                    <select
+                      id="inventory-sort"
+                      value={inventorySortBy}
+                      onChange={(e) => setInventorySortBy(e.target.value)}
+                      className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    >
+                      <option value="name">Product name</option>
+                      <option value="supplier">Supplier, then product</option>
+                    </select>
+                  </div>
+
                 </div>
               </div>
+
+
 
               <div
                 ref={stockSummaryTableScrollRef}
