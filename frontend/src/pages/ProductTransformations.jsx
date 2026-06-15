@@ -18,16 +18,18 @@ import {
   useCreateTransformationMutation,
   useCancelTransformationMutation,
 } from '../store/services/productTransformationsApi';
-import { useGetVariantsByBaseProductQuery, useLazyGetVariantQuery } from '../store/services/productVariantsApi';
-import { useGetProductsQuery } from '../store/services/productsApi';
+import { useGetVariantQuery, useLazyGetVariantQuery } from '../store/services/productVariantsApi';
+import { useGetProductQuery } from '../store/services/productsApi';
 import { ProductSearchableSelect } from '../components/ProductSearchableSelect';
 import { VariantSearchableSelect } from '../components/VariantSearchableSelect';
 import { handleApiError, showSuccessToast, showErrorToast } from '../utils/errorHandler';
-import { LoadingSpinner, LoadingButton } from '../components/LoadingSpinner';
+import { LoadingButton, LoadingTable } from '../components/LoadingSpinner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import ValidatedInput, { ValidatedSelect } from '../components/ValidatedInput';
+import { PageLayout } from '../components/layout/PageLayout';
+import { PageHeader } from '../components/layout/PageHeader';
 import BarcodeLabelPrinter from '../components/BarcodeLabelPrinter';
 
 /** Rows for BarcodeLabelPrinter: base product + target variant (labels for both). */
@@ -123,18 +125,6 @@ const ProductTransformations = () => {
     return transformationsData?.data?.transformations || transformationsData?.transformations || [];
   }, [transformationsData]);
 
-  const { data: productsData, isLoading: productsLoading } = useGetProductsQuery(
-    {
-      limit: 10000,
-      listMode: 'minimal',
-    },
-    { refetchOnMountOrArgChange: true }
-  );
-  const products = React.useMemo(() => {
-    return productsData?.data?.products || productsData?.products || [];
-  }, [productsData]);
-
-
   const [cancelTransformation, { isLoading: isCancelling }] = useCancelTransformationMutation();
   const [fetchVariantById] = useLazyGetVariantQuery();
   const [printingLabelsRowId, setPrintingLabelsRowId] = useState(null);
@@ -207,13 +197,12 @@ const ProductTransformations = () => {
   ];
 
   return (
-    <div className="p-3 sm:p-5 xl:p-6 2xl:p-8">
-      <div className="mb-4 xl:mb-6">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
-          <div>
-            <h1 className="text-xl sm:text-2xl xl:text-3xl font-bold text-gray-900">Product Transformations</h1>
-            <p className="mt-0.5 xl:mt-1 text-xs sm:text-sm xl:text-base text-gray-600">Convert base products to variants and track transformations</p>
-          </div>
+    <PageLayout>
+      <PageHeader
+        title="Product Transformations"
+        subtitle="Convert base products to variants and track transformations"
+        icon={Package}
+        actions={
           <Button
             onClick={() => setIsModalOpen(true)}
             variant="default"
@@ -223,8 +212,8 @@ const ProductTransformations = () => {
             <Plus className="h-3.5 w-3.5 xl:h-4 xl:w-4" />
             New Transformation
           </Button>
-        </div>
-      </div>
+        }
+      />
 
       {/* Filters */}
       <div className="bg-white rounded-lg shadow p-3 xl:p-4 mb-4 xl:mb-6">
@@ -241,10 +230,8 @@ const ProductTransformations = () => {
           </div>
           <ProductSearchableSelect
             placeholder="All products — search to filter by base"
-            products={products}
             value={selectedBaseProduct}
             onValueChange={setSelectedBaseProduct}
-            loading={productsLoading}
             allowClear
             className="w-full"
           />
@@ -268,7 +255,7 @@ const ProductTransformations = () => {
 
       {/* Transformations Table */}
       {transformationsLoading ? (
-        <LoadingSpinner />
+        <LoadingTable rows={6} columns={5} />
       ) : transformations.length === 0 ? (
         <div className="bg-white rounded-lg shadow p-8 sm:p-12 text-center">
           <Package className="h-12 w-12 text-gray-400 mx-auto mb-4" />
@@ -284,7 +271,7 @@ const ProductTransformations = () => {
         </div>
       ) : (
         <div className="bg-white rounded-lg shadow overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="table-scroll">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
@@ -392,8 +379,6 @@ const ProductTransformations = () => {
       {/* Transformation Modal */}
       {isModalOpen && (
         <TransformationModal
-          products={products}
-          productsLoading={productsLoading}
           isOpen={isModalOpen}
           onClose={handleCloseModal}
           onSuccess={() => {
@@ -410,12 +395,12 @@ const ProductTransformations = () => {
           modalTitle="Print product / variant barcode labels"
         />
       )}
-    </div>
+    </PageLayout>
   );
 };
 
 // Transformation Modal Component
-const TransformationModal = ({ products, productsLoading, isOpen, onClose, onSuccess, onOpenBarcodePrint }) => {
+const TransformationModal = ({ isOpen, onClose, onSuccess, onOpenBarcodePrint }) => {
   const [formData, setFormData] = useState({
     baseProduct: '',
     targetVariant: '',
@@ -425,54 +410,29 @@ const TransformationModal = ({ products, productsLoading, isOpen, onClose, onSuc
     /** Not sent to API — used only for printed labels (variant row). */
     optionalBarcode: '',
   });
-  const [selectedBaseProductData, setSelectedBaseProductData] = useState(null);
-  const [selectedVariantData, setSelectedVariantData] = useState(null);
-  /** Only reset variant when the user changes base product — not when `products` refetches (that was clearing state mid-request). */
   const prevBaseProductIdRef = React.useRef('');
 
-  const { data: variantsData, isFetching: variantsForBaseLoading } = useGetVariantsByBaseProductQuery(
-    formData.baseProduct,
-    { skip: !formData.baseProduct }
-  );
+  const { data: baseProductResponse } = useGetProductQuery(formData.baseProduct, {
+    skip: !formData.baseProduct,
+  });
+  const selectedBaseProductData = React.useMemo(() => {
+    const data = baseProductResponse;
+    return data?.data?.product ?? data?.product ?? data?.data ?? data ?? null;
+  }, [baseProductResponse]);
 
-  const selectableVariants = React.useMemo(() => {
-    const raw = variantsData?.data?.variants ?? variantsData?.variants ?? [];
-    const list = Array.isArray(raw) ? [...raw] : [];
-    list.sort((a, b) => {
-      const la = (
-        a.displayName ??
-        a.display_name ??
-        a.variantName ??
-        a.variant_name ??
-        ''
-      )
-        .toString()
-        .toLowerCase();
-      const lb = (
-        b.displayName ??
-        b.display_name ??
-        b.variantName ??
-        b.variant_name ??
-        ''
-      )
-        .toString()
-        .toLowerCase();
-      return la.localeCompare(lb);
-    });
-    return list;
-  }, [variantsData]);
+  const { data: variantResponse } = useGetVariantQuery(formData.targetVariant, {
+    skip: !formData.targetVariant,
+  });
+  const selectedVariantData = React.useMemo(() => {
+    const data = variantResponse;
+    return data?.data?.variant ?? data?.variant ?? data?.data ?? data ?? null;
+  }, [variantResponse]);
 
   React.useEffect(() => {
     if (!formData.baseProduct) {
-      setSelectedBaseProductData(null);
       prevBaseProductIdRef.current = '';
       return;
     }
-    const product = products.find(
-      (p) => String(p._id ?? p.id) === String(formData.baseProduct)
-    );
-    setSelectedBaseProductData(product);
-
     if (prevBaseProductIdRef.current !== formData.baseProduct) {
       const prevId = prevBaseProductIdRef.current;
       prevBaseProductIdRef.current = formData.baseProduct;
@@ -480,22 +440,14 @@ const TransformationModal = ({ products, productsLoading, isOpen, onClose, onSuc
         setFormData((prev) => ({ ...prev, targetVariant: '', optionalBarcode: '' }));
       }
     }
-  }, [formData.baseProduct, products]);
+  }, [formData.baseProduct]);
 
   React.useEffect(() => {
-    if (formData.targetVariant) {
-      const variant = selectableVariants.find(
-        (v) => String(v._id ?? v.id) === String(formData.targetVariant)
-      );
-      setSelectedVariantData(variant);
-      if (variant) {
-        const cost = getEffectiveVariantTransformationCost(variant, selectedBaseProductData);
-        setFormData(prev => ({ ...prev, unitTransformationCost: cost }));
-      }
-    } else {
-      setSelectedVariantData(null);
+    if (selectedVariantData && selectedBaseProductData) {
+      const cost = getEffectiveVariantTransformationCost(selectedVariantData, selectedBaseProductData);
+      setFormData((prev) => ({ ...prev, unitTransformationCost: cost }));
     }
-  }, [formData.targetVariant, selectableVariants, selectedBaseProductData]);
+  }, [selectedVariantData, selectedBaseProductData]);
 
   const [createTransformation, { isLoading: isSubmitting }] = useCreateTransformationMutation();
 
@@ -522,13 +474,7 @@ const TransformationModal = ({ products, productsLoading, isOpen, onClose, onSuc
       }).unwrap();
       let rows = buildLabelPrinterRows(baseSnap, variantSnap, labelOpts);
       if (rows.length === 0) {
-        const p = products.find(
-          (x) => String(x._id ?? x.id) === String(formData.baseProduct)
-        );
-        const v = selectableVariants.find(
-          (x) => String(x._id ?? x.id) === String(formData.targetVariant)
-        );
-        rows = buildLabelPrinterRows(p, v, labelOpts);
+        rows = buildLabelPrinterRows(selectedBaseProductData, selectedVariantData, labelOpts);
       }
       if (rows.length > 0 && typeof onOpenBarcodePrint === 'function') {
         onOpenBarcodePrint(rows);
@@ -581,12 +527,11 @@ const TransformationModal = ({ products, productsLoading, isOpen, onClose, onSuc
           <ProductSearchableSelect
             label="Base Product"
             placeholder="Search base product…"
-            products={products}
             value={formData.baseProduct}
             onValueChange={(id) =>
               setFormData((prev) => ({ ...prev, baseProduct: id, optionalBarcode: '' }))
             }
-            loading={productsLoading}
+            withinModal
             className="w-full"
           />
 
@@ -605,25 +550,14 @@ const TransformationModal = ({ products, productsLoading, isOpen, onClose, onSuc
               <VariantSearchableSelect
                 label="Target Variant"
                 placeholder="Search variant for this product…"
-                variants={selectableVariants}
+                baseProductId={formData.baseProduct}
                 value={formData.targetVariant}
                 onValueChange={(id) =>
                   setFormData((prev) => ({ ...prev, targetVariant: id, optionalBarcode: '' }))
                 }
-                loading={!!formData.baseProduct && variantsForBaseLoading}
+                withinModal
                 className="w-full"
               />
-
-              {!variantsForBaseLoading && selectableVariants.length === 0 && (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 xl:p-4">
-                  <div className="flex items-center gap-1.5 xl:gap-2">
-                    <AlertCircle className="h-4 w-4 xl:h-5 xl:w-5 text-yellow-600" />
-                    <span className="text-xs xl:text-sm text-yellow-800">
-                      No variants found for this product. Please create a variant first.
-                    </span>
-                  </div>
-                </div>
-              )}
 
               {formData.targetVariant && (
                 <>

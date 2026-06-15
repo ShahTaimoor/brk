@@ -6,7 +6,7 @@ export const componentRegistry = {
   '/dashboard': {
     title: 'Dashboard',
     icon: 'LayoutDashboard',
-    allowMultiple: true,
+    allowMultiple: false,
     component: () => import('../pages/Dashboard').then(m => m.default || m.Dashboard)
   },
   '/sales': {
@@ -88,6 +88,11 @@ export const componentRegistry = {
     icon: 'ArrowUpDown',
     component: () => import('../pages/StockMovements').then(m => m.default || m.StockMovements)
   },
+  '/stock-transfers': {
+    title: 'Stock Transfers',
+    icon: 'ArrowRightLeft',
+    component: () => import('../pages/StockTransfers').then(m => m.default)
+  },
   '/stock-ledger': {
     title: 'Stock Ledger',
     icon: 'FileText',
@@ -156,16 +161,6 @@ export const componentRegistry = {
     icon: 'Tag',
     component: () => import('../pages/Discounts').then(m => m.default || m.Discounts)
   },
-  '/sales-performance': {
-    title: 'Sales Performance',
-    icon: 'TrendingUp',
-    component: () => import('../pages/SalesPerformanceReports').then(m => m.default || m.SalesPerformanceReports)
-  },
-  '/inventory-reports': {
-    title: 'Inventory Reports',
-    icon: 'Warehouse',
-    component: () => import('../pages/InventoryReports').then(m => m.default || m.InventoryReports)
-  },
   '/cash-payments': {
     title: 'Cash Payments',
     icon: 'CreditCard',
@@ -176,6 +171,18 @@ export const componentRegistry = {
     title: 'Expenses',
     icon: 'Wallet',
     component: () => import('../pages/Expenses').then(m => m.default || m.Expenses)
+  },
+  '/daily-cash': {
+    title: 'Daily Cash Closing',
+    icon: 'Wallet',
+    allowMultiple: false,
+    component: () => import('../pages/DailyCashClosing').then(m => m.default || m.DailyCashClosing)
+  },
+  '/till': {
+    title: 'Daily Cash Closing',
+    icon: 'Wallet',
+    allowMultiple: false,
+    component: () => import('../pages/DailyCashClosing').then(m => m.default || m.DailyCashClosing)
   },
   '/bank-payments': {
     title: 'Bank Payments',
@@ -190,7 +197,7 @@ export const componentRegistry = {
     component: () => import('../pages/CashReceipts').then(m => m.default || m.CashReceipts)
   },
   '/cash-receiving': {
-    title: 'Cash Receiving',
+    title: 'Multi Cash Receipt',
     icon: 'Receipt',
     allowMultiple: true,
     component: () => import('../pages/CashReceiving').then(m => m.default || m.CashReceiving)

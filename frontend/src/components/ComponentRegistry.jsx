@@ -24,10 +24,10 @@ const componentLoader = {
   '/pl-statements': () => import('../pages/PLStatements').then(module => module.PLStatements),
   '/balance-sheet-statement': () => import('../pages/BalanceSheetStatement').then(module => module.BalanceSheetStatement),
   '/discounts': () => import('../pages/Discounts').then(module => module.default),
-  '/sales-performance': () => import('../pages/SalesPerformanceReports').then(module => module.default),
-  '/inventory-reports': () => import('../pages/InventoryReports').then(module => module.default),
   '/cash-payments': () => import('../pages/CashPayments').then(module => module.default),
   '/expenses': () => import('../pages/Expenses').then(module => module.default),
+  '/daily-cash': () => import('../pages/DailyCashClosing').then(module => module.default || module.DailyCashClosing),
+  '/till': () => import('../pages/DailyCashClosing').then(module => module.default || module.DailyCashClosing),
   '/bank-payments': () => import('../pages/BankPayments').then(module => module.default),
   '/cash-receipts': () => import('../pages/CashReceipts').then(module => module.default),
   '/cash-receiving': () => import('../pages/CashReceiving').then(module => module.default),
@@ -49,7 +49,7 @@ export const componentRegistry = {
   '/dashboard': {
     title: 'Dashboard',
     icon: 'LayoutDashboard',
-    allowMultiple: true
+    allowMultiple: false
   },
   '/sales': {
     title: 'Sales',
@@ -144,14 +144,6 @@ export const componentRegistry = {
     title: 'Discounts',
     icon: 'Tag'
   },
-  '/sales-performance': {
-    title: 'Sales Performance',
-    icon: 'TrendingUp'
-  },
-  '/inventory-reports': {
-    title: 'Inventory Reports',
-    icon: 'Warehouse'
-  },
   '/cash-payments': {
     title: 'Cash Payments',
     icon: 'CreditCard',
@@ -160,6 +152,16 @@ export const componentRegistry = {
   '/expenses': {
     title: 'Expenses',
     icon: 'Wallet'
+  },
+  '/daily-cash': {
+    title: 'Daily Cash Closing',
+    icon: 'Wallet',
+    allowMultiple: false
+  },
+  '/till': {
+    title: 'Daily Cash Closing',
+    icon: 'Wallet',
+    allowMultiple: false
   },
   '/bank-payments': {
     title: 'Bank Payments',
@@ -172,7 +174,7 @@ export const componentRegistry = {
     allowMultiple: true
   },
   '/cash-receiving': {
-    title: 'Cash Receiving',
+    title: 'Multi Cash Receipt',
     icon: 'Receipt',
     allowMultiple: true
   },

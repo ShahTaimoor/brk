@@ -39,7 +39,7 @@ import {
   LineItemBoxInputCell,
 } from '../components/order/CartLineItemAtoms';
 import { useListControls } from '../hooks/useListControls';
-import { formatPartyAddress as formatAddressForDisplay } from '../utils/partyDisplay';
+import { formatPartyAddress as formatAddressForDisplay, getProductDisplayName } from '../utils/partyDisplay';
 import PaginationControls from '../components/PaginationControls';
 import ExcelExportButton from '../components/ExcelExportButton';
 import PdfExportButton from '../components/PdfExportButton';
@@ -101,20 +101,7 @@ import { buildReceiptLabelProductsFromLineItems } from '../utils/receiptLabelUti
 import { useResponsive } from '../components/ResponsiveContainer';
 import { DeleteConfirmationDialog } from '../components/ConfirmationDialog';
 import { useDeleteConfirmation } from '../hooks/useConfirmation';
-
-// Helper to get product display name (handles object with name/displayName or UUID string)
-const getProductDisplayName = (product) => {
-  if (!product) return 'Unknown Product';
-  if (typeof product === 'object') {
-    const name = product.displayName || product.variantName || product.name || product.company_name || '';
-    return name || 'Product';
-  }
-  // UUID-like string - don't show raw ID
-  if (typeof product === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(product)) {
-    return 'Product';
-  }
-  return product;
-};
+import { PageLayout } from '../components/layout/PageLayout';
 
 function normalizePoLineProductId(item) {
   const raw = item?.productData?._id ?? item?.productData?.id ?? item?.product;
@@ -602,12 +589,12 @@ export const PurchaseOrders = ({ tabId }) => {
     items: productsData,
     isLoading: lineProductSearchLoading,
     emptyMessage: lineProductEmptyMessage,
-  } = useDebouncedPosProductSearch(productSearchTerm, { dropdownLimit: 120 });
+  } = useDebouncedPosProductSearch(productSearchTerm);
 
   const {
     items: modalProductsData,
     isLoading: modalProductSearchLoading,
-  } = useDebouncedPosProductSearch(modalProductSearchTerm, { dropdownLimit: 120 });
+  } = useDebouncedPosProductSearch(modalProductSearchTerm);
 
   const modalProductsLoading = modalProductSearchLoading;
 
@@ -928,7 +915,7 @@ export const PurchaseOrders = ({ tabId }) => {
           ...(item?.boxes !== undefined && item?.pieces !== undefined ? { boxes: item.boxes, pieces: item.pieces } : {}),
         },
       });
-      return;
+      return 'duplicate';
     }
 
     const newItem = {
@@ -1303,7 +1290,7 @@ export const PurchaseOrders = ({ tabId }) => {
     const items = (order.items || []).map((item) => {
       const product = item.product || item.productData || {};
       const productName = typeof product === 'object' && product !== null
-        ? (product.name || product.displayName || product.display_name || product.variantName || product.variant_name)
+        ? getProductDisplayName(product, 'Product')
         : getProductDisplayName(product);
       const name = productName || 'Product';
       const qty = Number(item.quantity) || 0;
@@ -1446,7 +1433,7 @@ export const PurchaseOrders = ({ tabId }) => {
   }, [fetchPurchaseOrdersForExport, purchaseOrdersExportParams, filters.fromDate, filters.toDate, companySettings]);
 
   return (
-    <div className="space-y-4 lg:space-y-6">
+    <PageLayout className="space-y-4 lg:space-y-6">
       {/* Modern Header Section */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3">
         <div className="flex flex-col lg:flex-row lg:items-center gap-3 lg:gap-2">
@@ -1612,21 +1599,21 @@ export const PurchaseOrders = ({ tabId }) => {
                             className="h-8 w-8 p-0 flex-shrink-0 ml-2"
                           />
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Stock</label>
-                            <span className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center leading-tight">
+                        <div className="grid grid-cols-4 gap-2">
+                          <div className="min-w-0">
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1 truncate">Stock</label>
+                            <span className="text-xs font-semibold text-gray-700 bg-gray-100 px-1 py-1.5 rounded border border-gray-200 block text-center leading-tight min-h-[2rem] flex items-center justify-center">
                               {hasDualUnit(product)
                                 ? formatStockDualLabel(product?.inventory?.currentStock || 0, product)
                                 : (product?.inventory?.currentStock || 0)}
                             </span>
                           </div>
-                          <div>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Total</label>
-                            <LineItemTotalCell value={Math.round(totalPrice)} />
+                          <div className="min-w-0">
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1 truncate">Total</label>
+                            <LineItemTotalCell value={Math.round(totalPrice)} textSize="text-xs" className="px-1" />
                           </div>
-                          <div className={hasDualUnit(product) ? 'col-span-2' : ''}>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Quantity</label>
+                          <div className="min-w-0">
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1 truncate">Quantity</label>
                             {hasDualUnit(product) ? (
                               <DualUnitQuantityInput
                                 product={product}
@@ -1653,7 +1640,7 @@ export const PurchaseOrders = ({ tabId }) => {
                                   }));
                                 }}
                                 min={1}
-                                inputClassName="text-center h-8 w-full border border-gray-300 rounded px-2"
+                                inputClassName="text-center h-8 w-full border border-gray-300 rounded px-1 text-sm"
                                 compact={hasDualUnit(product)}
                               />
                             ) : (
@@ -1674,13 +1661,13 @@ export const PurchaseOrders = ({ tabId }) => {
                                   }));
                                 }}
                                 onFocus={(e) => e.target.select()}
-                                className="text-center h-8 w-full"
+                                className="text-center h-8 w-full px-1 text-sm"
                                 min="1"
                               />
                             )}
                           </div>
-                          <div>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Cost</label>
+                          <div className="min-w-0">
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1 truncate">Cost</label>
                             <Input
                               type="number"
                               step="0.01"
@@ -1695,7 +1682,7 @@ export const PurchaseOrders = ({ tabId }) => {
                                 }));
                               }}
                               onFocus={(e) => e.target.select()}
-                              className="text-center h-8 w-full"
+                              className="text-center h-8 w-full px-1 text-sm"
                               min="0"
                             />
                           </div>
@@ -1888,18 +1875,13 @@ export const PurchaseOrders = ({ tabId }) => {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Expected Delivery
-                      </label>
-                      <div className="relative">
-                        <Input
-                          type="date"
-                          value={formData.expectedDelivery}
-                          onChange={(e) => setFormData(prev => ({ ...prev, expectedDelivery: e.target.value }))}
-                          className="h-10 text-sm w-full pr-8"
-                        />
-                        <Calendar className="absolute right-2 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none sm:hidden" />
-                      </div>
+                      <DateFilter mode="single"
+                        label="Expected Delivery"
+                        value={formData.expectedDelivery}
+                        onChange={(date) => setFormData(prev => ({ ...prev, expectedDelivery: date }))}
+                        size="sm"
+                        placeholder="Select date"
+                      />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-gray-700 mb-1">
@@ -1930,15 +1912,13 @@ export const PurchaseOrders = ({ tabId }) => {
                         disabled
                       />
                     </div>
-                    <div className="flex flex-col w-48">
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Expected Delivery
-                      </label>
-                      <Input
-                        type="date"
+                    <div className="w-48">
+                      <DateFilter mode="single"
+                        label="Expected Delivery"
                         value={formData.expectedDelivery}
-                        onChange={(e) => setFormData(prev => ({ ...prev, expectedDelivery: e.target.value }))}
-                        className="h-8 text-sm"
+                        onChange={(date) => setFormData(prev => ({ ...prev, expectedDelivery: date }))}
+                        size="sm"
+                        placeholder="Select date"
                       />
                     </div>
                     <div className="flex flex-col w-[28rem]">
@@ -2237,16 +2217,13 @@ export const PurchaseOrders = ({ tabId }) => {
                         </div>
 
                         {/* Expected Delivery */}
-                        <div className="flex flex-col w-48">
-                          <label className="block text-xs font-medium text-gray-700 mb-1">
-                            Expected Delivery
-                          </label>
-                          <Input
-                            type="date"
-                            autoComplete="off"
+                        <div className="w-48">
+                          <DateFilter mode="single"
+                            label="Expected Delivery"
                             value={formData.expectedDelivery}
-                            onChange={(e) => setFormData(prev => ({ ...prev, expectedDelivery: e.target.value }))}
-                            className="h-8 text-sm"
+                            onChange={(date) => setFormData(prev => ({ ...prev, expectedDelivery: date }))}
+                            size="sm"
+                            placeholder="Select date"
                           />
                         </div>
 
@@ -2679,7 +2656,11 @@ export const PurchaseOrders = ({ tabId }) => {
                   className="p-2 text-gray-400 transition-colors hover:text-gray-600 hover:bg-gray-100 rounded-full"
                   title="Refresh"
                 >
-                  <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+                  {isLoading ? (
+                    <LoadingSpinner size="sm" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
                 </button>
               </div>
             </div>
@@ -2810,8 +2791,7 @@ export const PurchaseOrders = ({ tabId }) => {
         <div className="card-content p-0">
           {isLoading ? (
             <div className="p-8 text-center">
-              <RefreshCw className="h-8 w-8 animate-spin mx-auto text-gray-400" />
-              <p className="mt-2 text-gray-500">Loading purchase orders...</p>
+              <LoadingInline message="Loading purchase orders..." />
             </div>
           ) : error ? (
             <div className="p-8 text-center text-red-600">
@@ -2884,14 +2864,7 @@ export const PurchaseOrders = ({ tabId }) => {
                                   {Math.round(order.total || 0)}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                  <div className="flex space-x-2">
-                                    <button
-                                      onClick={() => handleView(order)}
-                                      className="text-blue-600 hover:text-blue-900"
-                                      title="View"
-                                    >
-                                      <Eye className="h-4 w-4" />
-                                    </button>
+                                  <div className="flex items-center gap-3">
                                     <button
                                       onClick={() => handlePrint(order)}
                                       className="text-gray-600 hover:text-gray-900"
@@ -3075,7 +3048,7 @@ export const PurchaseOrders = ({ tabId }) => {
                     isUpdating={updatingItemsConfirmation}
                   />
                 )}
-                <div className="overflow-x-auto">
+                <div className="table-scroll">
                   <table className="min-w-full border border-gray-200 rounded-lg">
                     <thead className="bg-gray-50">
                       <tr>
@@ -3111,7 +3084,7 @@ export const PurchaseOrders = ({ tabId }) => {
                             <div>
                               <div className="font-medium">
                                 {typeof item.product === 'object' && item.product !== null
-                                  ? (item.product.name || item.product.displayName || item.product.display_name || item.product.variantName || item.product.variant_name || 'Unknown Product')
+                                  ? getProductDisplayName(item.product, 'Unknown Product')
                                   : (getProductDisplayName(item.product) || item.productData?.name || 'Unknown Product')}
                               </div>
                               {item.product?.description && typeof item.product === 'object' && (
@@ -3298,7 +3271,7 @@ export const PurchaseOrders = ({ tabId }) => {
         isLoading={deleteConfirmation.isLoading}
       />
 
-    </div>
+    </PageLayout>
   );
 };
 

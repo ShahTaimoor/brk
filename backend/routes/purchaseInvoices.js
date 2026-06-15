@@ -13,6 +13,8 @@ const purchaseInvoiceRepository = require('../repositories/postgres/PurchaseInvo
 const supplierRepository = require('../repositories/postgres/SupplierRepository');
 const AccountingService = require('../services/accountingService');
 
+const { transformCustomerToUppercase, transformProductToUppercase, transformSupplierToUppercase } = require('../utils/displayTransforms');
+
 const router = express.Router();
 
 // Format supplier address for invoice supplierInfo (for print)
@@ -35,26 +37,6 @@ const formatSupplierAddress = (supplierData) => {
     return parts.join(', ');
   }
   return '';
-};
-
-// Helper functions to transform names to uppercase
-const transformSupplierToUppercase = (supplier) => {
-  if (!supplier) return supplier;
-  if (supplier.toObject) supplier = supplier.toObject();
-  if (supplier.companyName) supplier.companyName = supplier.companyName.toUpperCase();
-  if (supplier.name) supplier.name = supplier.name.toUpperCase();
-  if (supplier.contactPerson && supplier.contactPerson.name) {
-    supplier.contactPerson.name = supplier.contactPerson.name.toUpperCase();
-  }
-  return supplier;
-};
-
-const transformProductToUppercase = (product) => {
-  if (!product) return product;
-  if (product.toObject) product = product.toObject();
-  if (product.name) product.name = product.name.toUpperCase();
-  if (product.description) product.description = product.description.toUpperCase();
-  return product;
 };
 
 // @route   GET /api/purchase-invoices
@@ -241,6 +223,7 @@ router.post('/', [
 
     // IMMEDIATE INVENTORY UPDATE - No confirmation required
     const inventoryService = require('../services/inventoryService');
+    const destinationWarehouseId = req.body.destinationWarehouseId || req.body.warehouseId || null;
     const inventoryUpdates = [];
     let inventoryUpdateFailed = false;
 
@@ -252,6 +235,7 @@ router.post('/', [
           type: 'in',
           quantity: item.quantity,
           cost: item.unitCost, // Pass cost price from purchase invoice
+          warehouseId: destinationWarehouseId,
           reason: 'Purchase Invoice Creation',
           reference: 'Purchase Invoice',
           referenceId: invoice._id,
@@ -471,6 +455,13 @@ router.put('/:id', [
       if (Math.abs(newAmountPaid - oldAmountPaid) >= 0.01) {
         try {
           const supplierId = updatedInvoice.supplier_id || updatedInvoice.supplierId || invoice.supplier_id || invoice.supplierId;
+          const invoiceTxnDate =
+            updatedInvoice.invoice_date ||
+            updatedInvoice.invoiceDate ||
+            invoice.invoice_date ||
+            invoice.invoiceDate ||
+            updatedInvoice.created_at ||
+            invoice.created_at;
           await AccountingService.recordPurchasePaymentAdjustment({
             invoiceId: updatedInvoice.id || updatedInvoice._id,
             invoiceNumber: updatedInvoice.invoice_number || updatedInvoice.invoiceNumber,
@@ -478,6 +469,7 @@ router.put('/:id', [
             oldAmountPaid,
             newAmountPaid,
             paymentMethod: updatedPayment?.method || invoice.payment?.method || 'cash',
+            transactionDate: invoiceTxnDate,
             createdBy: req.user?.id || req.user?._id
           });
         } catch (ledgerErr) {

@@ -27,7 +27,8 @@ import {
 } from '../store/services/saleReturnsApi';
 import { useDebouncedCustomerSearch } from '../hooks/useDebouncedCustomerSearch';
 import { handleApiError, showSuccessToast, showErrorToast } from '../utils/errorHandler';
-import { LoadingSpinner, LoadingButton, LoadingCard, LoadingTable } from '../components/LoadingSpinner';
+import { getCustomerDisplayName } from '../utils/partyDisplay';
+import { LoadingSpinner, LoadingButton, LoadingCard, LoadingTable, LoadingInline } from '../components/LoadingSpinner';
 import { useResponsive } from '../components/ResponsiveContainer';
 import { useTab } from '../contexts/TabContext';
 import { CustomerPartySelect, CustomerBalanceStrip } from '../components/order/CustomerPartySelect';
@@ -37,6 +38,7 @@ import DateFilter from '../components/DateFilter';
 import { EntityStatusBadge } from '../components/order/EntityStatusBadge';
 import { ClearConfirmationDialog } from '../components/ConfirmationDialog';
 import { useClearConfirmation } from '../hooks/useConfirmation';
+import { PageLayout } from '../components/layout/PageLayout';
 import { getCurrentDatePakistan } from '../utils/dateUtils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -253,7 +255,7 @@ const SaleReturns = () => {
 
   const stats = statsData?.data || {};
   const { data: banksData } = useGetBanksQuery(
-    { isActive: true },
+    { isActive: true, all: 'true' },
     { staleTime: 5 * 60_000 }
   );
   const activeBanks = useMemo(
@@ -270,13 +272,7 @@ const SaleReturns = () => {
   // Handle customer selection
   const handleCustomerSelect = (customer) => {
     setSelectedCustomer(customer);
-    setCustomerSearchTerm(
-      customer?.businessName ||
-      customer?.business_name ||
-      customer?.displayName ||
-      customer?.name ||
-      ''
-    );
+    setCustomerSearchTerm(getCustomerDisplayName(customer, ''));
     setStep('product-search');
     setProductSearchTerm('');
   };
@@ -697,7 +693,7 @@ const SaleReturns = () => {
   );
 
   return (
-    <div className="space-y-4 lg:space-y-6 w-full max-w-full overflow-x-hidden px-2 sm:px-0">
+    <PageLayout className="w-full max-w-full overflow-x-hidden">
       {/* Header - same layout as Sales page */}
       <div className={`flex ${isMobile ? 'flex-col space-y-4' : 'items-start justify-between'} gap-4`}>
         <div>
@@ -767,7 +763,7 @@ const SaleReturns = () => {
               </div>
             </div>
             {customersLoading ? (
-              <LoadingSpinner />
+              <LoadingInline message="Loading customers..." />
             ) : (
               <CustomerPartySelect
                 placeholder="Search customer by name, phone, or email..."
@@ -1055,7 +1051,7 @@ const SaleReturns = () => {
               <p className="text-gray-600">No sale returns found</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="table-scroll">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
@@ -1089,8 +1085,7 @@ const SaleReturns = () => {
                         {returnItem.returnNumber}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
-                        {returnItem.customer?.businessName || returnItem.customer?.business_name ||
-                          returnItem.customer?.displayName || returnItem.customer?.name || 'N/A'}
+                        {getCustomerDisplayName(returnItem.customer, 'N/A')}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
                         {returnItem.originalOrder?.orderNumber ||
@@ -1109,14 +1104,7 @@ const SaleReturns = () => {
                         {formatDate(returnItem.returnDate)}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm">
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => handleReturnSelect(returnItem)}
-                            className="text-blue-600 hover:text-blue-800 flex items-center gap-1"
-                          >
-                            <Eye className="h-4 w-4" />
-                            View
-                          </button>
+                        <div className="flex items-center gap-3">
                           <button
                             onClick={() => handleReturnPrint(returnItem)}
                             className="text-green-600 hover:text-green-800 flex items-center gap-1"
@@ -1172,7 +1160,7 @@ const SaleReturns = () => {
         itemType="return items"
         isLoading={false}
       />
-    </div>
+    </PageLayout>
   );
 };
 

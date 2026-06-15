@@ -33,6 +33,7 @@ import BaseModal from '../components/BaseModal';
 import { DeleteConfirmationDialog } from '../components/ConfirmationDialog';
 import { useDeleteConfirmation } from '../hooks/useConfirmation';
 import { Button } from '@/components/ui/button';
+import { LoadingPage } from '../components/LoadingSpinner';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,6 +47,8 @@ import { getInvoicePdfPayload } from '../utils/invoicePdfUtils';
 import PaginationControls from '../components/PaginationControls';
 import { useCursorPagination } from '../hooks/useCursorPagination';
 import { useSensitiveDataPermissions } from '../hooks/useSensitiveDataPermissions';
+import { PageLayout } from '../components/layout/PageLayout';
+import { PageHeader } from '../components/layout/PageHeader';
 
 const INVOICE_PAGE_SIZE = 50;
 
@@ -58,18 +61,18 @@ const formatOrderDate = (order) => {
   return d.toLocaleDateString();
 };
 
-// Check if order/invoice is within last 1 month (edit allowed only for invoices from past 30 days)
+// Check if order/invoice is within last 6 months (edit allowed only for invoices from past 6 months)
 const canEditInvoice = (order) => {
   const raw = order?.sale_date ?? order?.billDate ?? order?.order_date ?? order?.created_at ?? order?.createdAt;
   if (raw == null) return false;
   const invoiceDate = new Date(raw);
   if (Number.isNaN(invoiceDate.getTime())) return false;
   const now = new Date();
-  const oneMonthAgo = new Date(now);
-  oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
-  oneMonthAgo.setHours(0, 0, 0, 0);
+  const sixMonthsAgo = new Date(now);
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  sixMonthsAgo.setHours(0, 0, 0, 0);
   invoiceDate.setHours(0, 0, 0, 0);
-  return invoiceDate >= oneMonthAgo && invoiceDate <= now;
+  return invoiceDate >= sixMonthsAgo && invoiceDate <= now;
 };
 
 // Check if order/invoice is within last 2 weeks (delete allowed only for invoices from past 14 days)
@@ -556,11 +559,7 @@ export const Orders = () => {
   };
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-      </div>
-    );
+    return <LoadingPage useSpinningText={false} />;
   }
 
   if (error) {
@@ -572,14 +571,11 @@ export const Orders = () => {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-6 w-full max-w-full overflow-x-hidden px-2 sm:px-0">
-      {/* Header Section */}
+    <PageLayout className="w-full max-w-full overflow-x-hidden">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Sales Invoices</h1>
-        </div>
+        <PageHeader title="Sales Invoices" icon={ShoppingCart} />
 
-        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto shrink-0">
           {/* Post to Ledger Button (Desktop & Mobile) */}
           <button
             type="button"
@@ -1026,7 +1022,7 @@ export const Orders = () => {
             {/* Items Table */}
             <div className="mb-8">
               <h3 className="font-semibold text-gray-900 border-b border-gray-300 pb-2 mb-4">Items:</h3>
-              <div className="overflow-x-auto">
+              <div className="table-scroll">
                 <table className="w-full border-collapse border border-gray-300">
                   <thead>
                     <tr className="bg-gray-50">
@@ -1129,6 +1125,6 @@ export const Orders = () => {
         itemType="Sales Invoice"
         isLoading={deleteConfirmation.isLoading}
       />
-    </div>
+    </PageLayout>
   );
 };

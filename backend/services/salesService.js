@@ -16,6 +16,7 @@ const settingsService = require('./settingsService');
 const { getEffectiveGlobalTaxRate } = require('../utils/globalTax');
 const purchaseInvoiceRepository = require('../repositories/postgres/PurchaseInvoiceRepository');
 const { withBusinessTransaction } = require('./withBusinessTransaction');
+const costingService = require('./costingService');
 
 /** User-facing message when AR would exceed credit limit (sales order confirm / invoice). */
 const CREDIT_LIMIT_EXCEEDED_INVOICE_MESSAGE = 'Credit limit exceeded. Invoice cannot be created';
@@ -105,26 +106,12 @@ const formatCustomerAddress = (customerData) => {
 };
 
 class SalesService {
-  /**
-   * Transform customer names to uppercase
-   * @param {object} customer - Customer to transform
-   * @returns {object} - Transformed customer
-   */
   transformCustomerToUppercase(customer) {
+    const { formatCustomerEntity } = require('../utils/entityTextFormat');
     if (!customer) return customer;
-    if (customer.toObject) customer = customer.toObject();
-
-    // Postgres uses business_name, frontend uses businessName
-    if (customer.business_name && !customer.businessName) {
-      customer.businessName = customer.business_name;
-    }
-
-    if (customer.name) customer.name = customer.name.toUpperCase();
-    if (customer.businessName) customer.businessName = customer.businessName.toUpperCase();
-    if (customer.business_name) customer.business_name = customer.business_name.toUpperCase();
-    if (customer.firstName) customer.firstName = customer.firstName.toUpperCase();
-    if (customer.lastName) customer.lastName = customer.lastName.toUpperCase();
-    return customer;
+    const c = customer.toObject ? customer.toObject() : { ...customer };
+    if (c.business_name && !c.businessName) c.businessName = c.business_name;
+    return formatCustomerEntity(c);
   }
 
   /**
@@ -238,24 +225,11 @@ class SalesService {
     return results;
   }
 
-  /**
-   * Transform product names to uppercase
-   * @param {object} product - Product to transform
-   * @returns {object} - Transformed product
-   */
   transformProductToUppercase(product) {
+    const { formatProductEntity } = require('../utils/entityTextFormat');
     if (!product) return product;
-    if (product.toObject) product = product.toObject();
-    // Handle both products and variants
-    if (product.displayName) {
-      product.displayName = product.displayName.toUpperCase();
-    }
-    if (product.variantName) {
-      product.variantName = product.variantName.toUpperCase();
-    }
-    if (product.name) product.name = product.name.toUpperCase();
-    if (product.description) product.description = product.description.toUpperCase();
-    return product;
+    const p = product.toObject ? product.toObject() : { ...product };
+    return formatProductEntity(p);
   }
 
   /**
@@ -656,12 +630,18 @@ class SalesService {
       let productId = null;
       if (product) {
         productId = product.id || product._id;
-        const inv = await inventoryRepository.findByProduct(productId);
-        if (inv && inv.cost) {
-          const costObj = typeof inv.cost === 'string' ? JSON.parse(inv.cost) : inv.cost;
-          unitCost = costObj.average ?? costObj.lastPurchase ?? 0;
+        try {
+          const costInfo = await costingService.calculateCost(productId, item.quantity);
+          unitCost = costInfo.unitCost || 0;
+        } catch (err) {
+          console.error(`Failed to calculate costing for product ${productId}:`, err.message);
+          const inv = await inventoryRepository.findByProduct(productId);
+          if (inv && inv.cost) {
+            const costObj = typeof inv.cost === 'string' ? JSON.parse(inv.cost) : inv.cost;
+            unitCost = costObj.average ?? costObj.lastPurchase ?? 0;
+          }
+          if (unitCost === 0) unitCost = product.pricing?.cost ?? product.cost_price ?? 0;
         }
-        if (unitCost === 0) unitCost = product.pricing?.cost ?? product.cost_price ?? 0;
       } else {
         // Manual item: COGS/P&L use line unitCost (POS may send cost entered at sale time)
         productId = item.product || `manual_${Date.now()}`;
@@ -756,7 +736,12 @@ class SalesService {
     };
 
     const order = await withBusinessTransaction(async ({ client, addPostCommit }) => {
-      // Inventory updates must commit/rollback with sale creation.
+      const createdOrder = await salesRepository.create(saleData, client);
+      const saleId = createdOrder.id || createdOrder._id;
+      const saleRefNumber =
+        createdOrder.order_number || createdOrder.orderNumber || orderNumber;
+
+      // Inventory updates must commit/rollback with sale creation (needs sale id for stock_movements.reference_id).
       if (!skipInventoryUpdate) {
         for (const item of orderItems) {
           if (item.isManual) continue;
@@ -764,15 +749,16 @@ class SalesService {
             productId: item.product,
             type: 'out',
             quantity: item.quantity,
+            shopId: data.sourceShopId || data.shopId || null,
             reason: 'Sales Invoice Creation',
-            reference: 'Sales Invoice',
+            reference: saleRefNumber,
+            referenceId: saleId,
+            referenceModel: 'Sale',
             performedBy: user._id,
             notes: 'Stock reduced due to sales invoice creation'
           }, { client, skipAccountingEntry: true });
         }
       }
-
-      const createdOrder = await salesRepository.create(saleData, client);
 
       // Core ledger posting is part of transactional truth for a sale.
       await AccountingService.recordSale(createdOrder, { client });
@@ -798,13 +784,38 @@ class SalesService {
         }, { client });
       }
 
+      const pmTill = String(payment?.method || 'cash').toLowerCase();
+      if (pmTill === 'cash') {
+        const { isDailyCashClosingEnabled } = require('../utils/dailyCashSettings');
+        if (await isDailyCashClosingEnabled()) {
+          const dailyCashService = require('./dailyCashService');
+          const cashTillAmount = amountPaidAtCreate > 0 ? amountPaidAtCreate : orderTotal;
+          const userId = user?.id || user?._id;
+          const { formatDatePakistan } = require('../utils/dateFilter');
+          const businessDate = billDate
+            ? (typeof billDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(billDate)
+              ? billDate
+              : formatDatePakistan(parseLocalDate(billDate) || new Date(billDate)))
+            : undefined;
+          if (userId && cashTillAmount > 0) {
+            await dailyCashService.recordCashSale(userId, {
+              saleId: saleId,
+              orderNumber: saleRefNumber,
+              amount: cashTillAmount,
+              businessDate,
+            }, client);
+          }
+        }
+      }
+
       // Non-critical updates remain post-commit.
       addPostCommit(async () => {
         if (nextInvoiceSequence !== null) {
           try {
+            const latestSettings = await settingsService.getCompanySettings();
             await settingsService.updateCompanySettings({
               orderSettings: {
-                ...orderSettings,
+                ...(latestSettings?.orderSettings || {}),
                 invoiceSequenceNext: nextInvoiceSequence
               }
             });
@@ -879,7 +890,10 @@ class SalesService {
       payment: paymentStatus ? { status: paymentStatus } : undefined
     };
 
-    await StockMovementService.trackSalesOrder(orderPayload, user, {});
+    // updateStock already logs movements via locationStockService — avoid duplicate rows
+    if (skipInventoryUpdate) {
+      await StockMovementService.trackSalesOrder(orderPayload, user, {});
+    }
 
     if (orderStatus === 'confirmed' && paymentStatus === 'paid') {
       try {
@@ -1039,7 +1053,8 @@ class SalesService {
                 type: 'in',
                 quantity: item.quantity || 0,
                 reason: 'Sale cancelled',
-                reference: 'Sales',
+                reference: 'Sales Invoice',
+                referenceModel: 'Sale',
                 referenceId: order.id,
                 performedBy: user.id || user._id?.toString(),
                 notes: 'Stock restored due to sale cancellation'
@@ -1161,7 +1176,8 @@ class SalesService {
             total: sale.total,
             transactionDate: txnDate,
             customerId,
-            referenceNumber: refNum
+            referenceNumber: refNum,
+            notes: sale.notes
           });
           updated++;
         }

@@ -1,14 +1,16 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useReactToPrint } from 'react-to-print';
-import { Users, Building2, Calendar, FileText, ChevronDown, Printer, Wallet } from 'lucide-react';
+import { PRINT_PAGE_STYLE } from '../components/print/printPageStyle';
+import { Users, Building2, Calendar, FileText, Printer, Wallet } from 'lucide-react';
 import { useGetLedgerSummaryQuery, useGetCustomerDetailedTransactionsQuery, useGetSupplierDetailedTransactionsQuery, useGetAllEntriesQuery } from '../store/services/accountLedgerApi';
-import { useGetCustomersQuery } from '../store/services/customersApi';
-import { useGetSuppliersQuery } from '../store/services/suppliersApi';
+import { useDebouncedCustomerSearch } from '../hooks/useDebouncedCustomerSearch';
+import { useDebouncedSupplierSearch } from '../hooks/useDebouncedSupplierSearch';
+import { CustomerPartySelect } from '../components/order/CustomerPartySelect';
+import { SupplierPartySelect } from '../components/order/SupplierPartySelect';
 import { useGetBanksQuery } from '../store/services/banksApi';
 import { useGetBankReceiptsQuery } from '../store/services/bankReceiptsApi';
 import { useGetBankPaymentsQuery } from '../store/services/bankPaymentsApi';
-import { useLazyGetOrderByIdQuery, usePostMissingSalesToLedgerMutation, useSyncSalesLedgerMutation } from '../store/services/salesApi';
-import { useSyncPurchaseInvoicesLedgerMutation } from '../store/services/purchaseInvoicesApi';
+import { useLazyGetOrderByIdQuery } from '../store/services/salesApi';
 import { useLazyGetCashReceiptByIdQuery } from '../store/services/cashReceiptsApi';
 import { useLazyGetBankReceiptByIdQuery } from '../store/services/bankReceiptsApi';
 import { useLazyGetPurchaseInvoiceQuery } from '../store/services/purchaseInvoicesApi';
@@ -22,13 +24,20 @@ import { LoadingSpinner } from '../components/LoadingSpinner';
 import { useCompanyInfo } from '../hooks/useCompanyInfo';
 import { handleApiError } from '../utils/errorHandler';
 import { getId } from '../utils/entityId';
+import {
+  sortLedgerDisplayEntries,
+  applyLedgerRunningBalance,
+  isSaleReturnLedgerRow,
+  isPurchaseReturnLedgerRow,
+} from '../utils/ledgerSortUtils';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import DateFilter from '../components/DateFilter';
 import { useTableRowVirtualizer, getVirtualTablePadding } from '../hooks/useTableRowVirtualizer';
 import PageShell from '../components/PageShell';
+import { PageHeader } from '../components/layout/PageHeader';
 import { useGetAccountsQuery } from '../store/services/chartOfAccountsApi';
-
 const AccountLedgerSummary = () => {
   const ALL_BANKS_VALUE = '__all_banks__';
 
@@ -50,19 +59,27 @@ const AccountLedgerSummary = () => {
   const defaultDates = getDefaultDateRange();
 
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
-  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
-  const [customerSearchQuery, setCustomerSearchQuery] = useState('');
-  const [debouncedCustomerQuery, setDebouncedCustomerQuery] = useState('');
-  const customerDropdownRef = useRef(null);
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
 
   const [selectedSupplierId, setSelectedSupplierId] = useState('');
-  const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
-  const [supplierSearchQuery, setSupplierSearchQuery] = useState('');
-  const [debouncedSupplierQuery, setDebouncedSupplierQuery] = useState('');
+  const [selectedSupplier, setSelectedSupplier] = useState(null);
+  const [supplierSearchTerm, setSupplierSearchTerm] = useState('');
   const [selectedBankId, setSelectedBankId] = useState('');
   const [selectedExpenseAccountCode, setSelectedExpenseAccountCode] = useState('');
-  const supplierDropdownRef = useRef(null);
   const printRef = useRef(null);
+
+  const {
+    customers: customerOptions,
+    isLoading: customersLoading,
+    isFetching: customersFetching,
+  } = useDebouncedCustomerSearch(customerSearchTerm, { selectedCustomer });
+
+  const {
+    suppliers: supplierOptions,
+    isLoading: suppliersLoading,
+    isFetching: suppliersFetching,
+  } = useDebouncedSupplierSearch(supplierSearchTerm, { selectedSupplier });
 
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [printData, setPrintData] = useState(null);
@@ -74,9 +91,6 @@ const AccountLedgerSummary = () => {
   const [printLoading, setPrintLoading] = useState(false);
 
   const [getOrderById] = useLazyGetOrderByIdQuery();
-  const [postMissingSalesToLedger, { isLoading: isBackfillLoading }] = usePostMissingSalesToLedgerMutation();
-  const [syncSalesLedger, { isLoading: isSyncLoading }] = useSyncSalesLedgerMutation();
-  const [syncPurchaseInvoicesLedger, { isLoading: isSyncPurchaseLoading }] = useSyncPurchaseInvoicesLedgerMutation();
   const [getCashReceiptById] = useLazyGetCashReceiptByIdQuery();
   const [getBankReceiptById] = useLazyGetBankReceiptByIdQuery();
   const [getPurchaseInvoiceById] = useLazyGetPurchaseInvoiceQuery();
@@ -107,47 +121,7 @@ const AccountLedgerSummary = () => {
     return () => window.removeEventListener('accountLedgerConfigChanged', handler);
   }, []);
 
-  // Close dropdowns when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (customerDropdownRef.current && !customerDropdownRef.current.contains(event.target)) {
-        setShowCustomerDropdown(false);
-      }
-      if (supplierDropdownRef.current && !supplierDropdownRef.current.contains(event.target)) {
-        setShowSupplierDropdown(false);
-      }
-    };
-
-    if (showCustomerDropdown || showSupplierDropdown) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showCustomerDropdown, showSupplierDropdown]);
-
-  // Fetch customers for dropdown
-  const { data: customersData, isLoading: customersLoading } = useGetCustomersQuery(
-    { search: customerSearchQuery, limit: 100 },
-    { refetchOnMountOrArgChange: true }
-  );
-
-  const allCustomers = useMemo(() => {
-    return customersData?.data?.customers || customersData?.customers || customersData?.data || customersData || [];
-  }, [customersData]);
-
-  // Fetch suppliers for dropdown
-  const { data: suppliersData, isLoading: suppliersLoading } = useGetSuppliersQuery(
-    { search: debouncedSupplierQuery, limit: 100 },
-    { refetchOnMountOrArgChange: true }
-  );
-
-  const allSuppliers = useMemo(() => {
-    return suppliersData?.data?.suppliers || suppliersData?.suppliers || suppliersData?.data || suppliersData || [];
-  }, [suppliersData]);
-
-  const { data: banksData } = useGetBanksQuery({ isActive: true }, { skip: false });
+  const { data: banksData } = useGetBanksQuery({ isActive: true, all: 'true' }, { skip: false });
   const banks = useMemo(() => {
     return banksData?.data?.banks || banksData?.banks || [];
   }, [banksData]);
@@ -272,6 +246,7 @@ const AccountLedgerSummary = () => {
       return {
         openingBalance: d.openingBalance ?? 0,
         closingBalance: d.closingBalance ?? d.openingBalance ?? 0,
+        returnTotal: d.returnTotal ?? 0,
         supplier: d.supplier ?? {},
         entries: Array.isArray(d.entries) ? d.entries : []
       };
@@ -282,14 +257,13 @@ const AccountLedgerSummary = () => {
     return {
       openingBalance: one.openingBalance ?? 0,
       closingBalance: one.closingBalance ?? one.openingBalance ?? 0,
+      returnTotal: one.returnTotal ?? 0,
       supplier: { id: one.id ?? one._id, name: one.name ?? '', accountCode: one.accountCode ?? '' },
       entries: []
     };
   }, [selectedSupplierId, detailedSupplierTransactionsData?.data, summaryData?.data?.suppliers?.summary]);
 
   // Extract data from summary (must be before early return)
-  const allCustomersSummary = summaryData?.data?.customers?.summary || [];
-  const suppliers = summaryData?.data?.suppliers?.summary || [];
   const banksSummary = summaryData?.data?.banks?.summary || [];
   const customerTotals = summaryData?.data?.customers?.totals || {};
   const supplierTotals = summaryData?.data?.suppliers?.totals || {};
@@ -325,20 +299,6 @@ const AccountLedgerSummary = () => {
   const expenseAccountDetail = summaryData?.data?.expenseAccount;
   const expenseLedgerEntries = selectedExpenseAccountCode ? (summaryData?.data?.entries || []) : [];
   const period = summaryData?.data?.period || {};
-
-  const printLedgerRows = useMemo(() => {
-    if (selectedExpenseAccountCode) return expenseLedgerEntries;
-    if (selectedCustomerId) return customerDetail?.entries ?? detailedTransactionsData?.data?.entries ?? [];
-    return supplierDetail?.entries ?? detailedSupplierTransactionsData?.data?.entries ?? [];
-  }, [
-    selectedExpenseAccountCode,
-    expenseLedgerEntries,
-    selectedCustomerId,
-    customerDetail?.entries,
-    detailedTransactionsData?.data?.entries,
-    supplierDetail?.entries,
-    detailedSupplierTransactionsData?.data?.entries,
-  ]);
 
   const printOpeningBal = useMemo(() => {
     if (selectedExpenseAccountCode) return expenseAccountDetail?.openingBalance ?? 0;
@@ -378,55 +338,12 @@ const AccountLedgerSummary = () => {
     };
   }, [selectedExpenseAccountCode, expenseAccountDetail, selectedCustomerId, customerDetail, detailedTransactionsData, supplierDetail, detailedSupplierTransactionsData]);
 
-  const printShowReturnCol = showReturnColumn && !!selectedCustomerId && !selectedExpenseAccountCode;
-
-  // Filter customers based on selection (must be before early return)
-  const customers = useMemo(() => {
-    if (!selectedCustomerId) return [];
-    return allCustomersSummary.filter(c => {
-      const customerId = getId(c)?.toString();
-      const selectedId = selectedCustomerId?.toString();
-      return customerId === selectedId;
-    });
-  }, [allCustomersSummary, selectedCustomerId]);
-
-  // Filter customers for dropdown (search by business name, company name, name)
-  const filteredCustomers = useMemo(() => {
-    if (!customerSearchQuery.trim()) return allCustomers.slice(0, 50);
-    const query = customerSearchQuery.toLowerCase();
-    return allCustomers.filter(customer => {
-      const businessName = (customer.businessName || customer.business_name || '').toLowerCase();
-      const companyName = (customer.companyName || customer.company_name || '').toLowerCase();
-      const name = (customer.name || '').toLowerCase();
-      const email = (customer.email || '').toLowerCase();
-      const phone = (customer.phone || '').toLowerCase();
-      return businessName.includes(query) || companyName.includes(query) || name.includes(query) || email.includes(query) || phone.includes(query);
-    }).slice(0, 50);
-  }, [allCustomers, customerSearchQuery]);
-
-  // Filter suppliers based on selection (must be before early return)
-  const filteredSuppliersList = useMemo(() => {
-    if (!selectedSupplierId) return [];
-    return suppliers.filter(s => {
-      const supplierId = getId(s)?.toString();
-      const selectedId = selectedSupplierId?.toString();
-      return supplierId === selectedId;
-    });
-  }, [suppliers, selectedSupplierId]);
-
-  // Filter suppliers for dropdown (search by business name, company name, name)
-  const filteredSuppliers = useMemo(() => {
-    if (!supplierSearchQuery.trim()) return allSuppliers.slice(0, 50);
-    const query = supplierSearchQuery.toLowerCase();
-    return allSuppliers.filter(supplier => {
-      const companyName = (supplier.companyName || supplier.company_name || '').toLowerCase();
-      const businessName = (supplier.businessName || supplier.business_name || '').toLowerCase();
-      const name = (supplier.name || '').toLowerCase();
-      const email = (supplier.email || '').toLowerCase();
-      const phone = (supplier.phone || '').toLowerCase();
-      return companyName.includes(query) || businessName.includes(query) || name.includes(query) || email.includes(query) || phone.includes(query);
-    }).slice(0, 50);
-  }, [allSuppliers, supplierSearchQuery]);
+  const printShowReturnCol = showReturnColumn && (!!selectedCustomerId || !!selectedSupplierId) && !selectedExpenseAccountCode;
+  const activeReturnTotal = selectedCustomerId
+    ? (customerDetail?.returnTotal ?? detailedTransactionsData?.data?.returnTotal ?? 0)
+    : selectedSupplierId
+      ? (supplierDetail?.returnTotal ?? detailedSupplierTransactionsData?.data?.returnTotal ?? 0)
+      : 0;
 
   const handleFilterChange = (field, value) => {
     setFilters({ ...filters, [field]: value });
@@ -584,14 +501,40 @@ const AccountLedgerSummary = () => {
     );
   }, [bankLedgerRows, selectedBankId, ALL_BANKS_VALUE, bankTotals, banksSummary, selectedBank]);
 
-  const customerEntries = useMemo(
-    () => customerDetail?.entries ?? detailedTransactionsData?.data?.entries ?? [],
-    [customerDetail?.entries, detailedTransactionsData?.data?.entries]
-  );
-  const supplierEntries = useMemo(
-    () => supplierDetail?.entries ?? detailedSupplierTransactionsData?.data?.entries ?? [],
-    [supplierDetail?.entries, detailedSupplierTransactionsData?.data?.entries]
-  );
+  const customerEntries = useMemo(() => {
+    const raw = customerDetail?.entries ?? detailedTransactionsData?.data?.entries ?? [];
+    const opening = customerDetail?.openingBalance ?? detailedTransactionsData?.data?.openingBalance ?? 0;
+    return applyLedgerRunningBalance(sortLedgerDisplayEntries(raw), opening, false);
+  }, [
+    customerDetail?.entries,
+    customerDetail?.openingBalance,
+    detailedTransactionsData?.data?.entries,
+    detailedTransactionsData?.data?.openingBalance,
+  ]);
+  const supplierEntries = useMemo(() => {
+    const raw = supplierDetail?.entries ?? detailedSupplierTransactionsData?.data?.entries ?? [];
+    const opening = supplierDetail?.openingBalance ?? detailedSupplierTransactionsData?.data?.openingBalance ?? 0;
+    return applyLedgerRunningBalance(sortLedgerDisplayEntries(raw), opening, true);
+  }, [
+    supplierDetail?.entries,
+    supplierDetail?.openingBalance,
+    detailedSupplierTransactionsData?.data?.entries,
+    detailedSupplierTransactionsData?.data?.openingBalance,
+  ]);
+
+  const printLedgerRows = useMemo(() => {
+    if (selectedExpenseAccountCode) return expenseLedgerEntries;
+    if (selectedCustomerId) return customerEntries;
+    if (selectedSupplierId) return supplierEntries;
+    return [];
+  }, [
+    selectedExpenseAccountCode,
+    expenseLedgerEntries,
+    selectedCustomerId,
+    selectedSupplierId,
+    customerEntries,
+    supplierEntries,
+  ]);
 
   const virtualizeCustomerLedgerRows = Boolean(selectedCustomerId && customerEntries.length > 35);
   const virtualizeSupplierLedgerRows = Boolean(selectedSupplierId && supplierEntries.length > 35);
@@ -627,11 +570,11 @@ const AccountLedgerSummary = () => {
       search: ''
     });
     setSelectedCustomerId('');
-    setCustomerSearchQuery('');
-    setDebouncedCustomerQuery('');
+    setSelectedCustomer(null);
+    setCustomerSearchTerm('');
     setSelectedSupplierId('');
-    setSupplierSearchQuery('');
-    setDebouncedSupplierQuery('');
+    setSelectedSupplier(null);
+    setSupplierSearchTerm('');
     setSelectedBankId('');
     setSelectedExpenseAccountCode('');
   };
@@ -641,40 +584,62 @@ const AccountLedgerSummary = () => {
     setSelectedExpenseAccountCode(next);
     if (next) {
       setSelectedCustomerId('');
-      setCustomerSearchQuery('');
-      setDebouncedCustomerQuery('');
+      setSelectedCustomer(null);
+      setCustomerSearchTerm('');
       setSelectedSupplierId('');
-      setSupplierSearchQuery('');
-      setDebouncedSupplierQuery('');
+      setSelectedSupplier(null);
+      setSupplierSearchTerm('');
       setSelectedBankId('');
     }
   };
 
+  const handleCustomerSearch = (searchTerm) => {
+    setCustomerSearchTerm(searchTerm);
+    if (!searchTerm) {
+      setSelectedCustomerId('');
+      setSelectedCustomer(null);
+    }
+  };
+
+  const handleSupplierSearch = (searchTerm) => {
+    setSupplierSearchTerm(searchTerm);
+    if (!searchTerm) {
+      setSelectedSupplierId('');
+      setSelectedSupplier(null);
+    }
+  };
+
   const handleCustomerSelect = (customer) => {
+    if (!customer) {
+      setSelectedCustomerId('');
+      setSelectedCustomer(null);
+      setCustomerSearchTerm('');
+      return;
+    }
     setSelectedCustomerId(getId(customer));
-    const businessName = customer.businessName || customer.business_name || customer.companyName || customer.company_name || '';
-    const label = businessName || customer.name || '';
-    setCustomerSearchQuery(label);
-    setDebouncedCustomerQuery(label.trim());
-    setShowCustomerDropdown(false);
+    setSelectedCustomer(customer);
     // Clear other selections when customer is selected
     setSelectedSupplierId('');
-    setSupplierSearchQuery('');
-    setDebouncedSupplierQuery('');
+    setSelectedSupplier(null);
+    setSupplierSearchTerm('');
     setSelectedBankId('');
     setSelectedExpenseAccountCode('');
   };
 
   const handleSupplierSelect = (supplier) => {
+    if (!supplier) {
+      setSelectedSupplierId('');
+      setSelectedSupplier(null);
+      setSupplierSearchTerm('');
+      return;
+    }
     setSelectedSupplierId(getId(supplier));
-    setSupplierSearchQuery(supplier.companyName || supplier.name || '');
-    setDebouncedSupplierQuery((supplier.companyName || supplier.name || '').trim());
-    setShowSupplierDropdown(false);
+    setSelectedSupplier(supplier);
     // Clear other selections when supplier is selected
     setSelectedExpenseAccountCode('');
     setSelectedCustomerId('');
-    setCustomerSearchQuery('');
-    setDebouncedCustomerQuery('');
+    setSelectedCustomer(null);
+    setCustomerSearchTerm('');
     setSelectedBankId('');
   };
 
@@ -816,53 +781,6 @@ const AccountLedgerSummary = () => {
 
 
 
-  const handleBackfillSales = async () => {
-    try {
-      const result = await postMissingSalesToLedger({
-        dateFrom: filters.startDate,
-        dateTo: filters.endDate
-      }).unwrap();
-      const posted = result?.posted ?? 0;
-      const failed = result?.errors?.length ?? 0;
-      toast.success(`Backfilled ${posted} sale(s).${failed ? ` ${failed} failed.` : ''}`);
-      refetch();
-    } catch (err) {
-      handleApiError(err, 'Failed to backfill sales to ledger');
-    }
-  };
-
-  const handleSyncSalesLedger = async () => {
-    try {
-      const result = await syncSalesLedger({
-        dateFrom: filters.startDate,
-        dateTo: filters.endDate
-      }).unwrap();
-      const updated = result?.updated ?? 0;
-      const posted = result?.posted ?? 0;
-      const failed = result?.errors?.length ?? 0;
-      toast.success(`Synced ${updated} sale(s), posted ${posted}.${failed ? ` ${failed} failed.` : ''}`);
-      refetch();
-    } catch (err) {
-      handleApiError(err, 'Failed to sync sales ledger');
-    }
-  };
-
-  const handleSyncPurchaseLedger = async () => {
-    try {
-      const result = await syncPurchaseInvoicesLedger({
-        dateFrom: filters.startDate,
-        dateTo: filters.endDate
-      }).unwrap();
-      const updated = result?.updated ?? 0;
-      const posted = result?.posted ?? 0;
-      const failed = result?.errors?.length ?? 0;
-      toast.success(`Synced ${updated} purchase invoice(s), posted ${posted}.${failed ? ` ${failed} failed.` : ''}`);
-      refetch();
-    } catch (err) {
-      handleApiError(err, 'Failed to sync purchase invoices ledger');
-    }
-  };
-
   const ledgerPartyName = selectedExpenseAccountCode
     ? (expenseAccountDetail?.accountName || summaryData?.data?.expenseAccount?.accountName || 'Expense account')
     : selectedCustomerId
@@ -871,7 +789,8 @@ const AccountLedgerSummary = () => {
 
   const handleLedgerPrint = useReactToPrint({
     contentRef: printRef,
-    documentTitle: `Account Ledger Summary - ${ledgerPartyName}`,
+    documentTitle: '',
+    pageStyle: PRINT_PAGE_STYLE,
     onBeforeGetContent: () => {
       if (!printRef.current) {
         toast.error('No content to print. Please select a customer, supplier, or expense account.');
@@ -905,52 +824,17 @@ const AccountLedgerSummary = () => {
 
   return (
     <PageShell className="bg-gray-50" contentClassName="px-4 sm:px-6 py-6 space-y-6" maxWidthClassName="max-w-[1600px]">
-        {/* Header - professional card */}
         <header className="bg-white border border-gray-200 rounded-lg shadow-sm px-6 py-5">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-            <div>
-              <h1 className="text-xl sm:text-2xl font-semibold text-gray-900 tracking-tight">Account Ledger Summary</h1>
-              <p className="text-sm text-gray-500 mt-0.5">Customer receivables, supplier payables, banks, and expense accounts</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                onClick={handleSyncPurchaseLedger}
-                variant="outline"
-                size="sm"
-                className="flex items-center gap-2 border-gray-300 text-gray-700 hover:bg-gray-50"
-                disabled={isSyncPurchaseLoading}
-                title="Sync purchase invoices ledger for this date range"
-              >
-                <FileText className="h-4 w-4" />
-                {isSyncPurchaseLoading ? 'Syncing...' : 'Sync Purchase Ledger'}
-              </Button>
-              <Button
-                onClick={handleSyncSalesLedger}
-                variant="outline"
-                size="sm"
-                className="flex items-center gap-2 border-gray-300 text-gray-700 hover:bg-gray-50"
-                disabled={isSyncLoading}
-                title="Sync sales ledger for edited invoices in this date range"
-              >
-                <FileText className="h-4 w-4" />
-                {isSyncLoading ? 'Syncing...' : 'Sync Sales Ledger'}
-              </Button>
-              <Button
-                onClick={handleBackfillSales}
-                variant="outline"
-                size="sm"
-                className="flex items-center gap-2 border-gray-300 text-gray-700 hover:bg-gray-50"
-                disabled={isBackfillLoading}
-                title="Post missing sales to ledger for the selected date range"
-              >
-                <FileText className="h-4 w-4" />
-                {isBackfillLoading ? 'Backfilling...' : 'Backfill Sales'}
-              </Button>
+          <PageHeader
+            title="Account Ledger Summary"
+            subtitle="Customer receivables, supplier payables, banks, and expense accounts"
+            icon={FileText}
+            actions={
               <Button
                 onClick={handlePrint}
                 variant="outline"
                 size="sm"
-                className="flex items-center gap-2 border-gray-300 text-gray-700 hover:bg-gray-50"
+                className="flex items-center gap-2 border-gray-300 text-gray-700 hover:bg-gray-50 w-full sm:w-auto"
                 disabled={!selectedCustomerId && !selectedSupplierId && !selectedExpenseAccountCode}
                 title={
                   !selectedCustomerId && !selectedSupplierId && !selectedExpenseAccountCode
@@ -961,120 +845,68 @@ const AccountLedgerSummary = () => {
                 <Printer className="h-4 w-4" />
                 Print
               </Button>
-
-            </div>
-          </div>
+            }
+          />
         </header>
 
         {/* Filters - clean card */}
         <section className="bg-white border border-gray-200 rounded-lg shadow-sm p-5">
           <h2 className="text-sm font-medium text-gray-700 mb-4 uppercase tracking-wide">Filters</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-            {/* Customer Dropdown */}
-            <div className="relative" ref={customerDropdownRef}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 items-end">
+            {/* Customer */}
+            <div className="min-w-0">
               <label className="block text-xs font-medium text-gray-600 mb-1.5">Customer</label>
-              <div className="relative">
-                <Input
-                  type="text"
-                  placeholder="Search or select..."
-                  value={customerSearchQuery}
-                  onChange={(e) => {
-                    setCustomerSearchQuery(e.target.value);
-                    setShowCustomerDropdown(true);
-                  }}
-                  onFocus={() => setShowCustomerDropdown(true)}
-                  className="w-full h-9 border-gray-300 text-sm"
-                />
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                {showCustomerDropdown && filteredCustomers.length > 0 && (
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-56 overflow-y-auto">
-                    {filteredCustomers.map((customer) => {
-                      const businessName = customer.businessName || customer.business_name || customer.companyName || customer.company_name || '';
-                      const displayName = businessName || customer.name || 'Unknown Customer';
-                      return (
-                        <button
-                          key={getId(customer) ?? displayName}
-                          onClick={() => handleCustomerSelect(customer)}
-                          className={`w-full text-left px-3 py-2.5 text-sm border-b border-gray-100 last:border-0 hover:bg-gray-50 ${selectedCustomerId == getId(customer) ? 'bg-gray-100' : ''}`}
-                        >
-                          <div className="text-sm font-medium text-gray-900">{displayName}</div>
-                          {businessName && customer.name && customer.name !== businessName && (
-                            <div className="text-xs text-gray-500">{customer.name}</div>
-                          )}
-                          {customer.email && (
-                            <div className="text-xs text-gray-500">{customer.email}</div>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+              <CustomerPartySelect
+                items={customerOptions}
+                selectedItem={selectedCustomer}
+                onSelect={handleCustomerSelect}
+                onSearch={handleCustomerSearch}
+                searchValue={customerSearchTerm}
+                loading={customersLoading || customersFetching}
+                serverSideSearch
+                showSecondaryName
+                placeholder="Search or select..."
+                className="[&_input]:h-9 [&_input]:text-sm"
+              />
             </div>
 
-            {/* Supplier Dropdown */}
-            <div className="relative" ref={supplierDropdownRef}>
+            {/* Supplier */}
+            <div className="min-w-0">
               <label className="block text-xs font-medium text-gray-600 mb-1.5">Supplier</label>
-              <div className="relative">
-                <Input
-                  type="text"
-                  placeholder="Search or select..."
-                  value={supplierSearchQuery}
-                  onChange={(e) => {
-                    setSupplierSearchQuery(e.target.value);
-                    setShowSupplierDropdown(true);
-                  }}
-                  onFocus={() => setShowSupplierDropdown(true)}
-                  className="w-full h-9 border-gray-300 text-sm"
-                />
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                {showSupplierDropdown && filteredSuppliers.length > 0 && (
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-56 overflow-y-auto">
-                    {filteredSuppliers.map((supplier) => {
-                      const displayName = supplier.companyName || supplier.company_name || supplier.name || 'Unknown Supplier';
-                      return (
-                        <button
-                          key={getId(supplier) ?? displayName}
-                          onClick={() => handleSupplierSelect(supplier)}
-                          className={`w-full text-left px-3 py-2.5 text-sm border-b border-gray-100 last:border-0 hover:bg-gray-50 ${selectedSupplierId == getId(supplier) ? 'bg-gray-100' : ''}`}
-                        >
-                          <div className="text-sm font-medium text-gray-900">{displayName}</div>
-                          {supplier.name && supplier.name !== displayName && (
-                            <div className="text-xs text-gray-500">{supplier.name}</div>
-                          )}
-                          {supplier.email && (
-                            <div className="text-xs text-gray-500">{supplier.email}</div>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+              <SupplierPartySelect
+                items={supplierOptions}
+                selectedItem={selectedSupplier}
+                onSelect={handleSupplierSelect}
+                onSearch={handleSupplierSearch}
+                searchValue={supplierSearchTerm}
+                loading={suppliersLoading || suppliersFetching}
+                serverSideSearch
+                showSecondaryName
+                placeholder="Search or select..."
+                className="[&_input]:h-9 [&_input]:text-sm"
+              />
             </div>
 
             {/* Date range */}
-            <div>
+            <div className="min-w-0">
               <label className="block text-xs font-medium text-gray-600 mb-1.5">Date range</label>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="date"
-                  value={filters.startDate}
-                  onChange={(e) => handleFilterChange('startDate', e.target.value)}
-                  className="flex-1 min-w-0 h-9 border-gray-300 text-sm relative [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:cursor-pointer"
-                />
-                <span className="text-gray-400 shrink-0">–</span>
-                <Input
-                  type="date"
-                  value={filters.endDate}
-                  onChange={(e) => handleFilterChange('endDate', e.target.value)}
-                  className="flex-1 min-w-0 h-9 border-gray-300 text-sm relative [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:cursor-pointer"
-                />
-              </div>
+              <DateFilter
+                startDate={filters.startDate}
+                endDate={filters.endDate}
+                onDateChange={(start, end) => {
+                  setFilters((prev) => ({ ...prev, startDate: start, endDate: end }));
+                }}
+                compact
+                showPresets={false}
+                showClear={false}
+                showLabel={false}
+                size="sm"
+                className="min-w-0"
+              />
             </div>
 
             {/* Bank */}
-            <div>
+            <div className="min-w-0">
               <label className="block text-xs font-medium text-gray-600 mb-1.5">Bank</label>
               <select
                 value={selectedBankId}
@@ -1084,11 +916,11 @@ const AccountLedgerSummary = () => {
                   if (val) {
                     // Clear customer/supplier/expense selections when bank is selected
                     setSelectedCustomerId('');
-                    setCustomerSearchQuery('');
-                    setDebouncedCustomerQuery('');
+                    setSelectedCustomer(null);
+                    setCustomerSearchTerm('');
                     setSelectedSupplierId('');
-                    setSupplierSearchQuery('');
-                    setDebouncedSupplierQuery('');
+                    setSelectedSupplier(null);
+                    setSupplierSearchTerm('');
                     setSelectedExpenseAccountCode('');
                   }
                 }}
@@ -1106,7 +938,7 @@ const AccountLedgerSummary = () => {
             </div>
 
             {/* Expense account (GL) */}
-            <div>
+            <div className="min-w-0">
               <label className="block text-xs font-medium text-gray-600 mb-1.5">Expense account</label>
               <select
                 value={selectedExpenseAccountCode}
@@ -1124,7 +956,10 @@ const AccountLedgerSummary = () => {
             </div>
 
             {/* Clear */}
-            <div className="flex items-end">
+            <div className="min-w-0">
+              <label className="block text-xs font-medium text-gray-600 mb-1.5 invisible" aria-hidden="true">
+                Clear
+              </label>
               <Button
                 onClick={handleClearFilters}
                 variant="outline"
@@ -1142,7 +977,7 @@ const AccountLedgerSummary = () => {
             <LoadingSpinner />
           </div>
         ) : (
-          <div className="space-y-6">
+          <div className="page-container">
             {/* Customers Section - Show only if customer is selected and supplier is not */}
             {selectedCustomerId && !selectedSupplierId && !selectedExpenseAccountCode && (
               <div className="bg-white border border-emerald-200 rounded-lg shadow-sm overflow-hidden">
@@ -1233,7 +1068,7 @@ const AccountLedgerSummary = () => {
                               </td>
                               {showReturnColumn && (
                                 <td className="px-4 py-3 text-sm text-gray-900">
-                                  {entry.source === 'Sale Return' ? 'Return' : ''}
+                                  {isSaleReturnLedgerRow(entry) ? 'Return' : ''}
                                 </td>
                               )}
                               <td className="px-4 py-3 text-sm text-right text-gray-900">
@@ -1289,7 +1124,7 @@ const AccountLedgerSummary = () => {
                                       </td>
                                       {showReturnColumn && (
                                         <td className="px-4 py-3 text-sm text-gray-900">
-                                          {entry.source === 'Sale Return' ? 'Return' : ''}
+                                          {isSaleReturnLedgerRow(entry) ? 'Return' : ''}
                                         </td>
                                       )}
                                       <td className="px-4 py-3 text-sm text-right text-gray-900">
@@ -1389,6 +1224,11 @@ const AccountLedgerSummary = () => {
                           {formatDate(filters.startDate)} – {formatDate(filters.endDate)}
                         </p>
                       )}
+                      {showReturnColumn && (
+                        <p className="text-xs text-gray-500 mt-1">
+                          Return total: {formatCurrency(supplierDetail?.returnTotal ?? detailedSupplierTransactionsData?.data?.returnTotal ?? 0)}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1408,6 +1248,9 @@ const AccountLedgerSummary = () => {
                           <th className="px-4 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">Date</th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">Voucher No</th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">Particular</th>
+                          {showReturnColumn && (
+                            <th className="px-4 py-3 text-left text-xs font-medium text-white uppercase tracking-wider w-20">Return</th>
+                          )}
                           <th className="px-4 py-3 text-right text-xs font-medium text-white uppercase tracking-wider">Debits</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-white uppercase tracking-wider">Credits</th>
                           <th className="px-4 py-3 text-right text-xs font-medium text-white uppercase tracking-wider">Balance</th>
@@ -1417,7 +1260,7 @@ const AccountLedgerSummary = () => {
                       <tbody className="divide-y divide-gray-200 bg-white">
                         {/* Opening Balance Row */}
                         <tr className="bg-blue-50/50">
-                          <td colSpan="3" className="px-4 py-3 text-sm font-medium text-gray-900">Opening Balance:</td>
+                          <td colSpan={showReturnColumn ? 4 : 3} className="px-4 py-3 text-sm font-medium text-gray-900">Opening Balance:</td>
                           <td className="px-4 py-3 text-sm text-right text-gray-900">0</td>
                           <td className="px-4 py-3 text-sm text-right text-gray-900">0</td>
                           <td className={`px-4 py-3 text-sm text-right font-bold ${(supplierDetail?.openingBalance ?? detailedSupplierTransactionsData?.data?.openingBalance ?? 0) < 0 ? 'text-red-600' : 'text-gray-900'
@@ -1430,7 +1273,7 @@ const AccountLedgerSummary = () => {
                         {/* Transaction Entries */}
                         {supplierEntries.length === 0 ? (
                           <tr>
-                            <td colSpan="7" className="px-4 py-8 text-center text-gray-500">
+                            <td colSpan={showReturnColumn ? 8 : 7} className="px-4 py-8 text-center text-gray-500">
                               <FileText className="h-8 w-8 mx-auto mb-2 text-gray-400" />
                               <p>No transactions found for this period</p>
                             </td>
@@ -1447,6 +1290,11 @@ const AccountLedgerSummary = () => {
                               <td className="px-4 py-3 text-sm text-gray-700 max-w-md whitespace-normal break-words">
                                 {entry.particular || '-'}
                               </td>
+                              {showReturnColumn && (
+                                <td className="px-4 py-3 text-sm text-gray-900">
+                                  {isPurchaseReturnLedgerRow(entry) ? 'Return' : ''}
+                                </td>
+                              )}
                               <td className="px-4 py-3 text-sm text-right text-gray-900">
                                 {entry.debitAmount > 0 ? formatCurrency(entry.debitAmount) : '0'}
                               </td>
@@ -1477,11 +1325,12 @@ const AccountLedgerSummary = () => {
                             const vItems = supplierLedgerVirtualizer.getVirtualItems();
                             const totalH = supplierLedgerVirtualizer.getTotalSize();
                             const { padTop, padBottom } = getVirtualTablePadding(vItems, totalH);
+                            const supplierColSpan = showReturnColumn ? 8 : 7;
                             return (
                               <>
                                 {padTop > 0 ? (
                                   <tr aria-hidden className="pointer-events-none">
-                                    <td colSpan={7} className="p-0 border-0" style={{ height: padTop }} />
+                                    <td colSpan={supplierColSpan} className="p-0 border-0" style={{ height: padTop }} />
                                   </tr>
                                 ) : null}
                                 {vItems.map((vr) => {
@@ -1497,6 +1346,11 @@ const AccountLedgerSummary = () => {
                                       <td className="px-4 py-3 text-sm text-gray-700 max-w-md whitespace-normal break-words">
                                         {entry.particular || '-'}
                                       </td>
+                                      {showReturnColumn && (
+                                        <td className="px-4 py-3 text-sm text-gray-900">
+                                          {isPurchaseReturnLedgerRow(entry) ? 'Return' : ''}
+                                        </td>
+                                      )}
                                       <td className="px-4 py-3 text-sm text-right text-gray-900">
                                         {entry.debitAmount > 0 ? formatCurrency(entry.debitAmount) : '0'}
                                       </td>
@@ -1525,7 +1379,7 @@ const AccountLedgerSummary = () => {
                                 })}
                                 {padBottom > 0 ? (
                                   <tr aria-hidden className="pointer-events-none">
-                                    <td colSpan={7} className="p-0 border-0" style={{ height: padBottom }} />
+                                    <td colSpan={supplierColSpan} className="p-0 border-0" style={{ height: padBottom }} />
                                   </tr>
                                 ) : null}
                               </>
@@ -1533,12 +1387,30 @@ const AccountLedgerSummary = () => {
                           })()
                         )}
 
+                        {showReturnColumn &&
+                          supplierEntries.length > 0 &&
+                          activeReturnTotal > 0 && (
+                            <tr className="bg-blue-100 font-medium">
+                              <td className="px-4 py-3 text-sm text-gray-900"></td>
+                              <td className="px-4 py-3 text-sm text-gray-900"></td>
+                              <td className="px-4 py-3 text-sm text-gray-900">Return Total</td>
+                              <td className="px-4 py-3 text-sm font-medium text-gray-900">Return</td>
+                              <td className="px-4 py-3 text-sm text-right text-gray-900">
+                                {formatCurrency(activeReturnTotal)}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-right text-gray-900">0</td>
+                              <td className="px-4 py-3 text-sm text-right text-gray-900"></td>
+                              <td className="px-4 py-3 text-center no-print"></td>
+                            </tr>
+                          )}
+
                         {/* Total Row */}
                         {supplierEntries.length > 0 && (
                           <tr className="bg-blue-200 font-semibold border-t-2 border-blue-300">
                             <td className="px-4 py-3 text-sm text-gray-900"></td>
                             <td className="px-4 py-3 text-sm text-gray-900"></td>
                             <td className="px-4 py-3 text-sm text-gray-900">Total</td>
+                            {showReturnColumn && <td className="px-4 py-3 text-sm text-gray-900"></td>}
                             <td className="px-4 py-3 text-sm text-right text-gray-900">
                               {formatCurrency(sumDebits(supplierEntries))}
                             </td>
@@ -1990,7 +1862,7 @@ const AccountLedgerSummary = () => {
                   </td>
                   {printShowReturnCol && (
                     <td style={{ border: '1px solid #000', padding: '6px 2px', textAlign: 'center' }}>
-                      {selectedCustomerId && entry.source === 'Sale Return' ? 'Return' : ''}
+                      {isSaleReturnLedgerRow(entry) || isPurchaseReturnLedgerRow(entry) ? 'Return' : ''}
                     </td>
                   )}
                   <td className="print-amount" style={{ border: '1px solid #000', padding: '6px 2px', textAlign: 'right' }}>
@@ -2005,16 +1877,18 @@ const AccountLedgerSummary = () => {
                 </tr>
               ))}
 
-              {/* Return Total Row - customer only, when there are returns and return column visible */}
-              {printShowReturnCol && selectedCustomerId && (customerDetail?.returnTotal ?? detailedTransactionsData?.data?.returnTotal ?? 0) > 0 && (
+              {/* Return Total Row when there are returns and return column visible */}
+              {printShowReturnCol && activeReturnTotal > 0 && (
                 <tr className="account-ledger-print-subtotal">
                   <td style={{ border: '1px solid #000', padding: '6px 2px', textAlign: 'center' }}></td>
                   <td style={{ border: '1px solid #000', padding: '6px 2px' }}></td>
                   <td style={{ border: '1px solid #000', padding: '6px 2px', fontWeight: '600' }}>Return Total</td>
                   <td style={{ border: '1px solid #000', padding: '6px 2px', textAlign: 'center', fontWeight: '600' }}>Return</td>
-                  <td className="print-amount" style={{ border: '1px solid #000', padding: '6px 2px', textAlign: 'right' }}>0</td>
                   <td className="print-amount" style={{ border: '1px solid #000', padding: '6px 2px', textAlign: 'right' }}>
-                    {formatCurrency(customerDetail?.returnTotal ?? detailedTransactionsData?.data?.returnTotal ?? 0)}
+                    {selectedSupplierId ? formatCurrency(activeReturnTotal) : '0'}
+                  </td>
+                  <td className="print-amount" style={{ border: '1px solid #000', padding: '6px 2px', textAlign: 'right' }}>
+                    {selectedCustomerId ? formatCurrency(activeReturnTotal) : '0'}
                   </td>
                   <td className="print-amount" style={{ border: '1px solid #000', padding: '6px 2px', textAlign: 'right' }}></td>
                 </tr>

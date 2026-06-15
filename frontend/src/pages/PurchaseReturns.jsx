@@ -26,7 +26,7 @@ import {
 } from '../store/services/purchaseReturnsApi';
 import { useDebouncedSupplierSearch } from '../hooks/useDebouncedSupplierSearch';
 import { handleApiError, showSuccessToast, showErrorToast } from '../utils/errorHandler';
-import { LoadingSpinner, LoadingCard, LoadingTable, LoadingButton } from '../components/LoadingSpinner';
+import { LoadingSpinner, LoadingCard, LoadingTable, LoadingButton, LoadingInline } from '../components/LoadingSpinner';
 import { useResponsive } from '../components/ResponsiveContainer';
 import { SupplierPartySelect } from '../components/order/SupplierPartySelect';
 import CreatePurchaseReturnModal from '../components/CreatePurchaseReturnModal';
@@ -43,6 +43,7 @@ import {
 } from '../components/order/CartLineItemAtoms';
 import { ClearConfirmationDialog } from '../components/ConfirmationDialog';
 import { useClearConfirmation } from '../hooks/useConfirmation';
+import { PageLayout } from '../components/layout/PageLayout';
 import { getCurrentDatePakistan } from '../utils/dateUtils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -197,7 +198,7 @@ const PurchaseReturns = () => {
 
   const stats = statsData?.data || {};
   const { data: banksData } = useGetBanksQuery(
-    { isActive: true },
+    { isActive: true, all: 'true' },
     { staleTime: 5 * 60_000 }
   );
   const activeBanks = useMemo(
@@ -504,7 +505,7 @@ const PurchaseReturns = () => {
   );
 
   return (
-    <div className="space-y-4 lg:space-y-6 w-full max-w-full overflow-x-hidden px-2 sm:px-0">
+    <PageLayout className="w-full max-w-full overflow-x-hidden">
       {/* Header - same layout as Sale Returns */}
       <div className={`flex ${isMobile ? 'flex-col space-y-4' : 'items-start justify-between'} gap-4`}>
         <div>
@@ -574,7 +575,7 @@ const PurchaseReturns = () => {
               </div>
             </div>
             {suppliersLoading ? (
-              <LoadingSpinner />
+              <LoadingInline message="Loading suppliers..." />
             ) : (
               <SupplierPartySelect
                 placeholder="Search supplier by name, phone, or email..."
@@ -883,7 +884,7 @@ const PurchaseReturns = () => {
               <p className="text-gray-600">No purchase returns found</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="table-scroll">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
@@ -1004,7 +1005,7 @@ const PurchaseReturns = () => {
         itemType="return items"
         isLoading={false}
       />
-    </div>
+    </PageLayout>
   );
 };
 

@@ -22,18 +22,9 @@ const inventoryRepository = require('../repositories/InventoryRepository');
 const settingsService = require('../services/settingsService');
 const { applyGlobalTaxToSalesOrderItems } = require('../utils/globalTax');
 
-const router = express.Router();
+const { transformCustomerToUppercase, transformProductToUppercase, transformSupplierToUppercase } = require('../utils/displayTransforms');
 
-// Helper functions to transform names to uppercase
-const transformCustomerToUppercase = (customer) => {
-  if (!customer) return customer;
-  if (customer.toObject) customer = customer.toObject();
-  if (customer.name) customer.name = customer.name.toUpperCase();
-  if (customer.businessName) customer.businessName = customer.businessName.toUpperCase();
-  if (customer.firstName) customer.firstName = customer.firstName.toUpperCase();
-  if (customer.lastName) customer.lastName = customer.lastName.toUpperCase();
-  return customer;
-};
+const router = express.Router();
 
 /** UUID or manual_* line id (same rule as POST /sales) */
 const isValidSalesOrderProductId = (val) => {
@@ -42,21 +33,6 @@ const isValidSalesOrderProductId = (val) => {
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
   if (isUuid) return true;
   return s.startsWith('manual_');
-};
-
-const transformProductToUppercase = (product) => {
-  if (!product) return product;
-  if (product.toObject) product = product.toObject();
-  // Handle both products and variants
-  if (product.displayName) {
-    product.displayName = product.displayName.toUpperCase();
-  }
-  if (product.variantName) {
-    product.variantName = product.variantName.toUpperCase();
-  }
-  if (product.name) product.name = product.name.toUpperCase();
-  if (product.description) product.description = product.description.toUpperCase();
-  return product;
 };
 
 // Format customer address for print (handles string, array, object)
@@ -243,7 +219,7 @@ router.get('/', [
       if (so.customer) {
         so.customer = transformCustomerToUppercase(so.customer);
         const custName = (so.customer.business_name ?? so.customer.businessName) || so.customer.name || `${(so.customer.first_name || so.customer.firstName || '')} ${(so.customer.last_name || so.customer.lastName || '')}`.trim() || so.customer.email || 'Unknown Customer';
-        so.customer.displayName = custName.toUpperCase();
+        so.customer.displayName = custName;
         so.customerInfo = {
           ...so.customerInfo,
           address: formatCustomerAddress(so.customer) || so.customerInfo?.address
@@ -291,7 +267,7 @@ router.get('/:id', auth, async (req, res) => {
     if (salesOrder.customer) {
       salesOrder.customer = transformCustomerToUppercase(salesOrder.customer);
       const custName = (salesOrder.customer.business_name ?? salesOrder.customer.businessName) || salesOrder.customer.name || `${(salesOrder.customer.first_name || salesOrder.customer.firstName || '')} ${(salesOrder.customer.last_name || salesOrder.customer.lastName || '')}`.trim() || salesOrder.customer.email || 'Unknown Customer';
-      salesOrder.customer.displayName = custName.toUpperCase();
+      salesOrder.customer.displayName = custName;
       salesOrder.customerInfo = {
         ...salesOrder.customerInfo,
         address: formatCustomerAddress(salesOrder.customer) || salesOrder.customerInfo?.address

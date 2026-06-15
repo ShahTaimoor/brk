@@ -1,18 +1,18 @@
 import React from 'react';
 import { HelpCircle, Mail, Phone, Clock, CheckCircle, MessageCircle } from 'lucide-react';
+import { PageLayout } from '../components/layout/PageLayout';
+import { PageHeader } from '../components/layout/PageHeader';
 
 export const Help = () => {
   return (
-    <div className="max-w-4xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-      <div className="bg-white rounded-lg shadow-md p-8">
-        {/* Header */}
-        <div className="flex items-center mb-8">
-          <HelpCircle className="h-12 w-12 text-primary-600 mr-4" />
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Help & Support</h1>
-            <p className="text-gray-600 mt-1">Get assistance with your POS System</p>
-          </div>
-        </div>
+    <PageLayout className="max-w-4xl mx-auto">
+      <div className="bg-white rounded-lg shadow-md p-6 sm:p-8">
+        <PageHeader
+          title="Help & Support"
+          subtitle="Get assistance with your POS System"
+          icon={HelpCircle}
+          className="mb-8"
+        />
 
         {/* Support Contact Section */}
         <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-lg p-6 mb-8 border-2 border-blue-200">
@@ -55,12 +55,12 @@ export const Help = () => {
               <div>
                 <p className="font-medium text-gray-900">WhatsApp Support</p>
                 <a 
-                  href="https://wa.me/923166464649" 
+                  href="https://wa.me/923130922988" 
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-[#25D366] hover:text-[#20B858] underline"
                 >
-                  +92 316 64 64 64 9
+                  0313 0922988
                 </a>
                 <p className="text-sm text-gray-600 mt-1">
                   Chat with us on WhatsApp for instant support
@@ -139,7 +139,7 @@ export const Help = () => {
           </p>
         </div>
       </div>
-    </div>
+    </PageLayout>
   );
 };
 

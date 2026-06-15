@@ -6,7 +6,11 @@ const ThermalReceipt = ({
   companySettings = {},
   orderData = {},
   printSettings = {},
-  documentTitle = 'Receipt'
+  documentTitle = 'Receipt',
+  receivedAmount = null,
+  previousBalance = null,
+  combinedRemainingBalance = null,
+  showBalanceSummary = false,
 }) => {
   const barcodeRef = useRef(null);
 
@@ -17,6 +21,15 @@ const ThermalReceipt = ({
     email = ''
   } = companySettings;
   const receiptFooterText = printSettings?.receiptFooterText || '';
+
+  const {
+    showThermalCustomerName = true,
+    showThermalPaidBy = true,
+    showThermalBarcode = true,
+    showThermalBarcodeValue = true,
+    showThermalFooter = true,
+    showThermalPrintDate = true
+  } = printSettings || {};
 
   const {
     createdAt = new Date(),
@@ -41,6 +54,7 @@ const ThermalReceipt = ({
   const tax = pricing.taxAmount || orderData.tax || 0;
   const shipping = pricing.shipping || 0;
   const total = pricing.total || orderData.total || 0;
+  const notes = String(orderData.notes || '').trim();
 
   const formatDate = (date) => {
     if (!date) return 'N/A';
@@ -59,20 +73,20 @@ const ThermalReceipt = ({
   };
 
   useEffect(() => {
-    if (barcodeRef.current && invoiceNumber && invoiceNumber !== 'N/A') {
+    if (showThermalBarcode && barcodeRef.current && invoiceNumber && invoiceNumber !== 'N/A') {
       try {
         JsBarcode(barcodeRef.current, invoiceNumber, {
           format: 'CODE128',
           width: 2,
-          height: 56,
-          displayValue: true,
-          fontSize: 11,
-          margin: 4,
-          marginLeft: 6,
-          marginRight: 6,
-          marginTop: 4,
-          marginBottom: 4,
-          textMargin: 2,
+          height: 40,
+          displayValue: showThermalBarcodeValue,
+          fontSize: 9,
+          margin: 2,
+          marginLeft: 4,
+          marginRight: 4,
+          marginTop: 2,
+          marginBottom: 2,
+          textMargin: 1,
           lineColor: '#000000',
           background: '#ffffff',
           textAlign: 'center',
@@ -82,7 +96,7 @@ const ThermalReceipt = ({
         console.error('Barcode generation failed:', error);
       }
     }
-  }, [invoiceNumber]);
+  }, [invoiceNumber, showThermalBarcode, showThermalBarcodeValue]);
 
   return (
     <div className="thermal-receipt break-inside-avoid">
@@ -106,10 +120,16 @@ const ThermalReceipt = ({
           <span>Date:</span>
           <span>{formatDate(sale_date || createdAt)}</span>
         </div>
-        {customerInfo?.name && (
+        {showThermalCustomerName && customerInfo?.name && (
           <div className="thermal-receipt__info-row">
             <span>Customer:</span>
             <span>{customerInfo.name}</span>
+          </div>
+        )}
+        {notes && (
+          <div className="thermal-receipt__info-row thermal-receipt__info-row--notes">
+            <span>Notes:</span>
+            <span className="thermal-receipt__notes-value">{notes}</span>
           </div>
         )}
       </div>
@@ -119,7 +139,7 @@ const ThermalReceipt = ({
       <table className="thermal-receipt__table">
         <thead>
           <tr>
-            <th style={{ width: '25px', textAlign: 'center' }}>#</th>
+            <th>#</th>
             <th>Item</th>
             <th>Qty</th>
             <th>Price</th>
@@ -133,7 +153,7 @@ const ThermalReceipt = ({
             const lineTotal = item.total || (qty * price);
             return (
               <tr key={index}>
-                <td style={{ textAlign: 'center' }}>{index + 1}</td>
+                <td>{index + 1}</td>
                 <td className="thermal-receipt__item-name">
                   {item.product?.name || item.name || `Item ${index + 1}`}
                 </td>
@@ -169,28 +189,56 @@ const ThermalReceipt = ({
           <span>TOTAL:</span>
           <span>{formatCurrency(total)}</span>
         </div>
+        {receivedAmount != null && Number(receivedAmount) > 0 && (
+          <div className="thermal-receipt__summary-row">
+            <span>Received:</span>
+            <span>{formatCurrency(receivedAmount)}</span>
+          </div>
+        )}
+        {showBalanceSummary && previousBalance != null && (
+          <div className="thermal-receipt__summary-row">
+            <span>Prev. Balance:</span>
+            <span>{formatCurrency(previousBalance)}</span>
+          </div>
+        )}
+        {showBalanceSummary && combinedRemainingBalance != null && (
+          <div className="thermal-receipt__summary-row thermal-receipt__summary-row--total">
+            <span>Remaining Balance:</span>
+            <span>{formatCurrency(combinedRemainingBalance)}</span>
+          </div>
+        )}
       </div>
 
       <div className="thermal-receipt__footer">
-        {payment.method && (
+        {showThermalPaidBy && payment.method && (
           <div className="thermal-receipt__info-row">
             <span>Paid by:</span>
             <span>{payment.method}</span>
           </div>
         )}
-        <div className="thermal-receipt__divider"></div>
-        <div className="thermal-receipt__barcode">
-          <canvas ref={barcodeRef} width="520" height="140"></canvas>
-        </div>
-        {receiptFooterText && (
-          <div className="thermal-receipt__custom-footer">
-            {receiptFooterText}
+        {showThermalBarcode && (
+          <>
+            <div className="thermal-receipt__divider"></div>
+            <div className="thermal-receipt__barcode">
+              <canvas ref={barcodeRef} width="520" height="100"></canvas>
+            </div>
+          </>
+        )}
+        {showThermalFooter && (
+          <>
+            {receiptFooterText && (
+              <div className="thermal-receipt__custom-footer">
+                {receiptFooterText}
+              </div>
+            )}
+            {!receiptFooterText && <div>Thank You for Shopping!</div>}
+          </>
+        )}
+        {showThermalPrintDate && (
+          <div style={{ fontSize: '9px', marginTop: '2mm' }}>
+            {new Date().toLocaleString()}
           </div>
         )}
-        {!receiptFooterText && <div>Thank You for Shopping!</div>}
-        <div style={{ fontSize: '9px', marginTop: '2mm' }}>
-          {new Date().toLocaleString()}
-        </div>
       </div>
     </div>
   );

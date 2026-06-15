@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { body, validationResult, query } = require('express-validator');
-const { auth, requirePermission } = require('../middleware/auth');
+const { auth, requireAnyPermission } = require('../middleware/auth');
 const bankService = require('../services/bankService');
 
 // @route   GET /api/banks
@@ -9,8 +9,11 @@ const bankService = require('../services/bankService');
 // @access  Private
 router.get('/', [
   auth,
-  requirePermission('view_reports'),
-  query('isActive').optional().isBoolean().withMessage('isActive must be a boolean')
+  requireAnyPermission(['view_banks', 'view_reports']),
+  query('isActive').optional().isBoolean().withMessage('isActive must be a boolean'),
+  query('search').optional().isString().trim(),
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 10000 }),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -18,13 +21,12 @@ router.get('/', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const banks = await bankService.getBanks({
-      isActive: req.query.isActive
-    });
+    const result = await bankService.getBanks(req.query);
 
     res.json({
       success: true,
-      data: { banks }
+      data: { banks: result.banks },
+      pagination: result.pagination,
     });
   } catch (error) {
     console.error('Get banks error:', error);
@@ -41,7 +43,7 @@ router.get('/', [
 // @access  Private
 router.get('/:id', [
   auth,
-  requirePermission('view_reports')
+  requireAnyPermission(['view_banks', 'view_reports'])
 ], async (req, res) => {
   try {
     const bank = await bankService.getBankById(req.params.id);
@@ -71,7 +73,7 @@ router.get('/:id', [
 // @access  Private
 router.post('/', [
   auth,
-  requirePermission('create_orders'),
+  requireAnyPermission(['create_banks', 'create_orders', 'manage_users']),
   body('accountName').isString().trim().isLength({ min: 1, max: 200 }).withMessage('Account name is required'),
   body('accountNumber').isString().trim().isLength({ min: 1, max: 100 }).withMessage('Account number is required'),
   body('bankName').isString().trim().isLength({ min: 1, max: 200 }).withMessage('Bank name is required'),
@@ -140,7 +142,7 @@ router.post('/', [
 // @access  Private
 router.put('/:id', [
   auth,
-  requirePermission('edit_orders'),
+  requireAnyPermission(['edit_banks', 'edit_orders', 'manage_users']),
   body('accountName').optional().isString().trim().isLength({ min: 1, max: 200 }),
   body('accountNumber').optional().isString().trim().isLength({ min: 1, max: 100 }),
   body('bankName').optional().isString().trim().isLength({ min: 1, max: 200 }),
@@ -187,7 +189,7 @@ router.put('/:id', [
 // @access  Private
 router.delete('/:id', [
   auth,
-  requirePermission('delete_orders')
+  requireAnyPermission(['delete_banks', 'delete_orders', 'manage_users'])
 ], async (req, res) => {
   try {
     const result = await bankService.deleteBank(req.params.id);

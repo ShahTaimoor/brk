@@ -33,6 +33,7 @@ import { useDeleteConfirmation } from '../hooks/useConfirmation';
 
 import ProductFilters from '../components/ProductFilters';
 import { PageHeader } from '../components/layout/PageHeader';
+import { PageLayout } from '../components/layout/PageLayout';
 import { useTab } from '../contexts/TabContext';
 import { useBulkOperations } from '../hooks/useBulkOperations';
 import BulkOperationsBar from '../components/BulkOperationsBar';
@@ -244,8 +245,13 @@ export const Products = () => {
         products: data,
         autoCreateCategories: autoCreateImportCategories
       }).unwrap();
-      if (response.created > 0) {
-        toast.success(`Successfully imported ${response.created} products!`, { id: toastId });
+      const summaryParts = [];
+      if (response.created > 0) summaryParts.push(`${response.created} created`);
+      if (response.updated > 0) summaryParts.push(`${response.updated} updated`);
+      if (response.unchanged > 0) summaryParts.push(`${response.unchanged} unchanged`);
+
+      if (summaryParts.length > 0) {
+        toast.success(`Import complete: ${summaryParts.join(', ')}`, { id: toastId });
         if (response.failed > 0) {
           toast.warning(`${response.failed} products failed to import. Check console for details.`);
           console.warn('Import failures:', response.errors);
@@ -307,7 +313,7 @@ export const Products = () => {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-6 w-full max-w-full min-w-0">
+    <PageLayout>
       <PageHeader
         title="Products"
         subtitle="Manage your product catalog"
@@ -653,7 +659,7 @@ export const Products = () => {
           }}
         />
       )}
-    </div>
+    </PageLayout>
   );
 };
 

@@ -9,6 +9,7 @@ const { query: pgQuery } = require('../config/postgres');
 const profitDistributionService = require('../services/profitDistributionService');
 const salesRepository = require('../repositories/SalesRepository');
 const productRepository = require('../repositories/ProductRepository');
+const costingService = require('../services/costingService');
 const inventoryRepository = require('../repositories/postgres/InventoryRepository');
 const productVariantRepository = require('../repositories/ProductVariantRepository');
 const customerRepository = require('../repositories/CustomerRepository');
@@ -22,9 +23,45 @@ function canBeCancelled(order) {
   const status = order?.status;
   return status === 'pending' || status === 'confirmed';
 }
+
+/** Post-commit AR ledger balance for print/POS (source of truth after save). */
+async function resolveCustomerLedgerBalance(customerId) {
+  if (!customerId) return null;
+  try {
+    return await AccountingService.getCustomerBalance(customerId);
+  } catch (err) {
+    console.error('Failed to fetch customer ledger balance:', err);
+    return null;
+  }
+}
+
+/** Previous balance before this invoice: current ledger − (net − received). */
+function resolvePreviousBalanceFromLedger(ledgerBalance, orderTotal, amountPaid) {
+  if (ledgerBalance == null || !Number.isFinite(Number(ledgerBalance))) return null;
+  const total = parseFloat(orderTotal) || 0;
+  const paid = parseFloat(amountPaid) || 0;
+  const invoiceRemaining = Math.max(0, total - paid);
+  return Math.round((Number(ledgerBalance) - invoiceRemaining) * 100) / 100;
+}
+
+function resolveOrderTotalAndPaid(order) {
+  const total =
+    parseFloat(order?.total) ||
+    parseFloat(order?.pricing?.total) ||
+    0;
+  const amountPaid =
+    parseFloat(order?.amount_paid) ||
+    parseFloat(order?.amountPaid) ||
+    parseFloat(order?.payment?.amountPaid) ||
+    parseFloat(order?.payment?.amountReceived) ||
+    0;
+  return { total, amountPaid };
+}
 const { auth, requirePermission, maskSensitiveData } = require('../middleware/auth');
 const { handleValidationErrors } = require('../middleware/validation');
 const { preventPOSDuplicates } = require('../middleware/duplicatePrevention');
+
+const { transformCustomerToUppercase, transformProductToUppercase, transformSupplierToUppercase } = require('../utils/displayTransforms');
 
 const router = express.Router();
 
@@ -51,39 +88,6 @@ const formatCustomerAddress = (customerData) => {
     return parts.join(', ');
   }
   return '';
-};
-
-// Helper functions to transform names to uppercase
-const transformCustomerToUppercase = (customer) => {
-  if (!customer) return customer;
-  if (customer.toObject) customer = customer.toObject();
-
-  // Postgres uses business_name, frontend uses businessName
-  if (customer.business_name && !customer.businessName) {
-    customer.businessName = customer.business_name;
-  }
-
-  if (customer.name) customer.name = customer.name.toUpperCase();
-  if (customer.businessName) customer.businessName = customer.businessName.toUpperCase();
-  if (customer.business_name) customer.business_name = customer.business_name.toUpperCase();
-  if (customer.firstName) customer.firstName = customer.firstName.toUpperCase();
-  if (customer.lastName) customer.lastName = customer.lastName.toUpperCase();
-  return customer;
-};
-
-const transformProductToUppercase = (product) => {
-  if (!product) return product;
-  if (product.toObject) product = product.toObject();
-  // Handle both products and variants
-  if (product.displayName) {
-    product.displayName = product.displayName.toUpperCase();
-  }
-  if (product.variantName) {
-    product.variantName = product.variantName.toUpperCase();
-  }
-  if (product.name) product.name = product.name.toUpperCase();
-  if (product.description) product.description = product.description.toUpperCase();
-  return product;
 };
 
 const { validateDateParams, processDateFilter } = require('../middleware/dateFilter');
@@ -403,11 +407,27 @@ router.post('/', [
 
     // Get plain object for response transformations
     const orderForResponse = savedOrder.toObject ? savedOrder.toObject({ virtuals: true }) : { ...savedOrder };
+    const customerIdForBalance =
+      orderForResponse.customer_id ||
+      orderForResponse.customerId ||
+      orderForResponse.customer?.id ||
+      orderForResponse.customer?._id ||
+      customer ||
+      null;
+    const customerLedgerBalance = await resolveCustomerLedgerBalance(customerIdForBalance);
+    const { total: orderTotal, amountPaid } = resolveOrderTotalAndPaid(orderForResponse);
+    const customerPreviousBalance = resolvePreviousBalanceFromLedger(
+      customerLedgerBalance,
+      orderTotal,
+      amountPaid
+    );
 
     res.status(201).json({
       success: true,
       message: 'Order created successfully',
-      order: orderForResponse
+      order: orderForResponse,
+      customerLedgerBalance,
+      customerPreviousBalance,
     });
   } catch (error) {
     return next(error);
@@ -568,17 +588,17 @@ router.put('/:id', [
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    // Only allow editing invoices from the last 1 month
+    // Only allow editing invoices from the last 6 months
     const saleDate = order.sale_date || order.saleDate || order.created_at || order.createdAt;
     if (saleDate) {
       const invoiceDate = new Date(saleDate);
-      const oneMonthAgo = new Date();
-      oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
-      oneMonthAgo.setHours(0, 0, 0, 0);
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+      sixMonthsAgo.setHours(0, 0, 0, 0);
       invoiceDate.setHours(0, 0, 0, 0);
-      if (invoiceDate < oneMonthAgo) {
+      if (invoiceDate < sixMonthsAgo) {
         return res.status(403).json({
-          message: 'Cannot edit sales invoice older than 1 month. Only invoices from the last 30 days can be edited.',
+          message: 'Cannot edit sales invoice older than 6 months. Only invoices from the last 6 months can be edited.',
           code: 'EDIT_WINDOW_EXPIRED'
         });
       }
@@ -734,12 +754,18 @@ router.put('/:id', [
         let unitCost = 0;
         const productId = productForTax?.id || productForTax?._id;
         if (productId) {
-          const inv = await inventoryRepository.findByProduct(productId);
-          if (inv && inv.cost) {
-            const costObj = typeof inv.cost === 'string' ? JSON.parse(inv.cost) : inv.cost;
-            unitCost = costObj.average ?? costObj.lastPurchase ?? 0;
+          try {
+            const costInfo = await costingService.calculateCost(productId, item.quantity);
+            unitCost = costInfo.unitCost || 0;
+          } catch (err) {
+            console.error(`Failed to calculate costing for product ${productId}:`, err.message);
+            const inv = await inventoryRepository.findByProduct(productId);
+            if (inv && inv.cost) {
+              const costObj = typeof inv.cost === 'string' ? JSON.parse(inv.cost) : inv.cost;
+              unitCost = costObj.average ?? costObj.lastPurchase ?? 0;
+            }
+            if (unitCost === 0) unitCost = productForTax?.pricing?.cost ?? productForTax?.cost_price ?? 0;
           }
-          if (unitCost === 0) unitCost = productForTax?.pricing?.cost ?? productForTax?.cost_price ?? 0;
         }
 
         newOrderItems.push({
@@ -883,7 +909,8 @@ router.put('/:id', [
             total: newTotal,
             transactionDate: billDateChanged ? newSaleDate : undefined,
             customerId: customerChanged ? customerIdForLedger : undefined,
-            referenceNumber: refNum
+            referenceNumber: refNum,
+            notes: updatedOrder.notes
           });
         }
       }
@@ -892,7 +919,7 @@ router.put('/:id', [
     }
 
     // Post amount received change to account ledger so balance reflects the update
-    if (!customerChanged && req.body.amountReceived !== undefined) {
+    if (req.body.amountReceived !== undefined) {
       const oldAmountPaid = parseFloat(order.amount_paid) || 0;
       const newAmountPaid = parseFloat(req.body.amountReceived) || 0;
       const paymentMethodForAdjustment = req.body.paymentMethod || order.payment_method || order.payment?.method || 'cash';
@@ -902,10 +929,12 @@ router.put('/:id', [
         : null;
       if (Math.abs(newAmountPaid - oldAmountPaid) >= 0.01) {
         try {
+          const customerIdForPaymentLedger =
+            customerIdForLedger ?? updatedOrder?.customer_id ?? updatedOrder?.customer ?? order.customer ?? order.customer_id;
           await AccountingService.recordSalePaymentAdjustment({
             saleId: order.id || order._id,
             orderNumber: order.order_number || order.orderNumber,
-            customerId: order.customer_id,
+            customerId: customerIdForPaymentLedger,
             oldAmountPaid,
             newAmountPaid,
             paymentMethod: paymentMethodForAdjustment,
@@ -913,6 +942,24 @@ router.put('/:id', [
             transactionDate: newSaleDate || new Date(),
             createdBy: req.user?.id || req.user?._id
           });
+          if (pmAdj === 'cash') {
+            const { isDailyCashClosingEnabled } = require('../utils/dailyCashSettings');
+            if (await isDailyCashClosingEnabled()) {
+              const dailyCashService = require('../services/dailyCashService');
+              const { formatDatePakistan } = require('../utils/dateFilter');
+              const delta = newAmountPaid - oldAmountPaid;
+              const businessDate = newSaleDate
+                ? formatDatePakistan(newSaleDate instanceof Date ? newSaleDate : new Date(newSaleDate))
+                : undefined;
+              await dailyCashService.recordSalePaymentDelta(req.user?.id || req.user?._id, {
+                saleId: order.id || order._id,
+                orderNumber: order.order_number || order.orderNumber,
+                delta,
+                isIncrease: delta > 0,
+                businessDate,
+              });
+            }
+          }
         } catch (ledgerErr) {
           console.error('Failed to post sale payment adjustment to ledger:', ledgerErr);
         }
@@ -1044,9 +1091,26 @@ router.put('/:id', [
       console.error('Failed to get fully enriched order on update:', e);
     }
 
+    const customerIdForBalance =
+      finalOrder?.customer_id ||
+      finalOrder?.customerId ||
+      finalOrder?.customer?.id ||
+      finalOrder?.customer?._id ||
+      customerIdForLedger ||
+      null;
+    const customerLedgerBalance = await resolveCustomerLedgerBalance(customerIdForBalance);
+    const { total: savedOrderTotal, amountPaid: savedAmountPaid } = resolveOrderTotalAndPaid(finalOrder);
+    const customerPreviousBalance = resolvePreviousBalanceFromLedger(
+      customerLedgerBalance,
+      savedOrderTotal,
+      savedAmountPaid
+    );
+
     res.json({
       message: 'Order updated successfully',
-      order: finalOrder
+      order: finalOrder,
+      customerLedgerBalance,
+      customerPreviousBalance,
     });
   } catch (error) {
     console.error('Update order error:', error);

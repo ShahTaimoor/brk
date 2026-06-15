@@ -30,10 +30,11 @@ import {
   useDeleteDiscountMutation,
 } from '../store/services/discountsApi';
 import { handleApiError, showSuccessToast, showErrorToast } from '../utils/errorHandler';
-import { LoadingSpinner } from '../components/LoadingSpinner';
+import { LoadingSpinner, LoadingPage } from '../components/LoadingSpinner';
 import CreateDiscountModal from '../components/CreateDiscountModal';
 import DiscountDetailModal from '../components/DiscountDetailModal';
 import PageShell from '../components/PageShell';
+import { PageHeader } from '../components/layout/PageHeader';
 import DiscountFilters from '../components/DiscountFilters';
 import { useDeleteConfirmation } from '../hooks/useConfirmation';
 import { DeleteConfirmationDialog } from '../components/ConfirmationDialog';
@@ -146,6 +147,13 @@ const Discounts = () => {
     }).format(amount);
   };
 
+  /** Plain amount for stats (no currency symbol). */
+  const formatAmountPlain = (amount) =>
+    new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    }).format(Number(amount ?? 0));
+
   const formatDate = (date) => {
     if (!date) return 'N/A';
     return new Date(date).toLocaleDateString('en-US', { 
@@ -198,35 +206,35 @@ const Discounts = () => {
 
   return (
     <PageShell className="bg-gray-50/30" maxWidthClassName="max-w-7xl" contentClassName="space-y-6 p-4 md:p-8">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900 tracking-tight flex items-center">
-            <div className="bg-primary-100 p-2 rounded-lg mr-4">
-              <Tag className="h-7 w-7 text-primary-600" />
-            </div>
-            Discount Management
-          </h1>
-          <p className="text-slate-500 mt-1 font-medium">Manage percentage and fixed amount discounts</p>
-        </div>
-        
-        <div className="flex items-center space-x-3">
-          <button 
-            onClick={() => refetchDiscounts()}
-            className="flex items-center space-x-2 px-4 py-2 text-sm font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-all shadow-sm"
-          >
-            <RefreshCw className={`h-4 w-4 ${discountsLoading ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
-          </button>
-          <button 
-            onClick={() => setShowCreateModal(true)}
-            className="flex items-center space-x-2 px-6 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-lg transition-all shadow-md"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Add Discount</span>
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Discount Management"
+        subtitle="Manage percentage and fixed amount discounts"
+        icon={Tag}
+        actions={
+          <>
+            <button
+              type="button"
+              onClick={() => refetchDiscounts()}
+              className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-all shadow-sm w-full sm:w-auto"
+            >
+              {discountsLoading ? (
+                <LoadingSpinner size="sm" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              <span>Refresh</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCreateModal(true)}
+              className="flex items-center justify-center gap-2 px-6 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-lg transition-all shadow-md w-full sm:w-auto"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Add Discount</span>
+            </button>
+          </>
+        }
+      />
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -249,7 +257,7 @@ const Discounts = () => {
         </div>
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
           <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Total Savings</p>
-          <h3 className="text-3xl font-black text-purple-600 tracking-tighter">{formatCurrency(stats.totalDiscountAmount || 0)}</h3>
+          <h3 className="text-3xl font-black text-purple-600 tracking-tighter">{formatAmountPlain(stats.totalDiscountAmount || 0)}</h3>
           <div className="mt-2 text-[10px] font-bold text-purple-500 uppercase tracking-tight">Customer savings</div>
         </div>
       </div>
@@ -329,9 +337,9 @@ const Discounts = () => {
 
       {/* Discounts Table */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="table-scroll">
           {discountsLoading ? (
-            <div className="py-20 text-center"><LoadingSpinner /></div>
+            <div className="py-20 text-center"><LoadingPage useSpinningText={false} /></div>
           ) : discounts.length === 0 ? (
             <div className="py-24 text-center">
               <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">

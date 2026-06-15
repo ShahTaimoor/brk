@@ -27,10 +27,11 @@ import { SupplierPartySelect, SupplierSummaryStrip } from '../components/order/S
 import { OrderNotesField } from '../components/order/OrderNotesField';
 import { PaymentMethodSelect } from '../components/order/PaymentMethodSelect';
 import { computePurchaseCheckoutPricing } from '../utils/orderPricing';
-import {
-  useGetSupplierQuery,
-  useLazySearchSuppliersQuery,
-} from '../store/services/suppliersApi';
+import { getSupplierOutstanding } from '../utils/partyBalance';
+import { computeLedgerPrintBalances } from '../utils/printBalanceUtils';
+import { getSupplierDisplayName, getProductDisplayName } from '../utils/partyDisplay';
+import { useGetSupplierQuery } from '../store/services/suppliersApi';
+import { useDebouncedSupplierSearch } from '../hooks/useDebouncedSupplierSearch';
 import {
   useCreatePurchaseInvoiceMutation,
   useUpdatePurchaseInvoiceMutation,
@@ -40,6 +41,7 @@ import {
   useDeletePurchaseInvoiceMutation,
 } from '../store/services/purchaseInvoicesApi';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useWarehouseInventoryMode, usePrimaryLocations } from '../features/inventory';
 import { useGetUnifiedBalanceQuery } from '../store/services/accountingApi';
 import { useGetBanksQuery } from '../store/services/banksApi';
 import { toast } from 'sonner';
@@ -95,6 +97,7 @@ import { getInvoicePdfPayload } from '../utils/invoicePdfUtils';
 
 
 import AsyncErrorBoundary from '../components/AsyncErrorBoundary';
+import { PageLayout } from '../components/layout/PageLayout';
 import { useResponsive } from '../components/ResponsiveContainer';
 import { ProductSearch as SharedSalesProductSearch } from '../components/sales/ProductSearch';
 import { useSensitiveDataPermissions } from '../hooks/useSensitiveDataPermissions';
@@ -121,9 +124,7 @@ const PurchaseItem = ({
   const isLowStock = currentStock <= reorderPoint;
 
   // Get display name for variants
-  const displayName = product.isVariant
-    ? (product.displayName || product.variantName || product.name || 'Unknown Variant')
-    : (product.name || 'Unknown Product');
+  const displayName = getProductDisplayName(product, 'Unknown Product');
 
   return (
     <div className={`py-2 sm:py-1 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
@@ -163,21 +164,21 @@ const PurchaseItem = ({
             className="p-1 flex-shrink-0"
           />
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Stock</label>
-            <span className="text-xs font-semibold text-gray-700 bg-gray-100 px-2 py-1 rounded border border-gray-200 block text-center leading-tight">
+        <div className="grid grid-cols-4 gap-2">
+          <div className="min-w-0">
+            <label className="block text-[10px] text-gray-500 mb-1 truncate">Stock</label>
+            <span className="text-xs font-semibold text-gray-700 bg-gray-100 px-1 py-1.5 rounded border border-gray-200 block text-center leading-tight min-h-[2rem] flex items-center justify-center">
               {hasDualUnit(product)
                 ? formatStockDualLabel(currentStock, product)
                 : currentStock}
             </span>
           </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Total</label>
-            <LineItemTotalCell value={totalPrice.toFixed(2)} textSize="text-xs" />
+          <div className="min-w-0">
+            <label className="block text-[10px] text-gray-500 mb-1 truncate">Total</label>
+            <LineItemTotalCell value={totalPrice.toFixed(2)} textSize="text-xs" className="px-1" />
           </div>
-          <div className={hasDualUnit(product) ? 'col-span-2' : ''}>
-            <label className="block text-xs text-gray-500 mb-1">Quantity</label>
+          <div className="min-w-0">
+            <label className="block text-[10px] text-gray-500 mb-1 truncate">Quantity</label>
             {hasDualUnit(product) ? (
               <DualUnitQuantityInput
                 product={product}
@@ -194,7 +195,7 @@ const PurchaseItem = ({
                   onUpdateQuantity(item.product?._id, newQuantity, ppb ? { boxes, pieces } : undefined);
                 }}
                 min={1}
-                inputClassName="input text-center text-sm h-8"
+                inputClassName="input text-center text-sm h-8 px-1"
                 compact={hasDualUnit(product)}
               />
             ) : (
@@ -204,13 +205,13 @@ const PurchaseItem = ({
                 value={item.quantity}
                 onChange={(e) => onUpdateQuantity(item.product?._id, parseInt(e.target.value) || 1)}
                 onFocus={(e) => e.target.select()}
-                className="input text-center text-sm h-8"
+                className="input text-center text-sm h-8 px-1 w-full"
                 min="1"
               />
             )}
           </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Cost</label>
+          <div className="min-w-0">
+            <label className="block text-[10px] text-gray-500 mb-1 truncate">Cost</label>
             <input
               type="number"
               step="0.01"
@@ -218,7 +219,7 @@ const PurchaseItem = ({
               value={item.costPerUnit}
               onChange={(e) => onUpdateCost(item.product?._id, parseFloat(e.target.value) || 0)}
               onFocus={(e) => e.target.select()}
-              className="input text-center text-sm h-8"
+              className="input text-center text-sm h-8 px-1 w-full"
               min="0"
             />
           </div>
@@ -379,6 +380,20 @@ const IMPORT_ALLOCATION_METHODS = {
   BY_QTY: 'by_quantity',
 };
 
+/** Stable supplier id whether API returns `id` or `_id`. */
+function getSupplierPartyId(supplier) {
+  if (!supplier) return null;
+  return supplier._id ?? supplier.id ?? null;
+}
+
+/** Keep both id shapes so RTK queries and supplier-change checks stay consistent. */
+function normalizeSupplierParty(supplier) {
+  if (!supplier) return null;
+  const id = getSupplierPartyId(supplier);
+  if (!id) return supplier;
+  return { ...supplier, _id: id, id };
+}
+
 export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
   const {
     canViewSupplierBalance,
@@ -446,7 +461,17 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
 
   const { isMobile } = useResponsive();
   const { companyInfo: companySettings } = useCompanyInfo();
+  const { enabled: warehouseInventoryMode } = useWarehouseInventoryMode();
+  const { warehouses, primaryWarehouseId } = usePrimaryLocations({
+    skip: !warehouseInventoryMode,
+  });
+  const [destinationWarehouseId, setDestinationWarehouseId] = useState('');
   const importPurchaseFeatureEnabled = companySettings.orderSettings?.enableImportPurchaseLandedCost === true;
+
+  useEffect(() => {
+    if (!warehouseInventoryMode || !primaryWarehouseId) return;
+    setDestinationWarehouseId((prev) => prev || primaryWarehouseId);
+  }, [warehouseInventoryMode, primaryWarehouseId]);
   const isEnhancedImportPurchase = isImportPurchase && importPurchaseFeatureEnabled;
   const dualUnitShowBoxInputEnabledPage = companySettings.orderSettings?.dualUnitShowBoxInput !== false;
   const taxSystemEnabled = companySettings.taxEnabled === true;
@@ -510,13 +535,18 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
 
 
 
-  const { updateTabTitle, getActiveTab, openTab } = useTab();
+  const { updateTabTitle, getActiveTab, openTab, updateTabProps } = useTab();
+  const isSubmittingRef = useRef(false);
 
   // Store refetch function from ProductSearch component
   const [refetchProducts, setRefetchProducts] = useState(null);
 
   // RTK Query hooks
-  const [searchSuppliers, { data: suppliersSearchResult, isLoading: suppliersLoading, refetch: refetchSuppliers }] = useLazySearchSuppliersQuery();
+  const {
+    suppliers: supplierOptions,
+    isLoading: suppliersLoading,
+    refetch: refetchSuppliers,
+  } = useDebouncedSupplierSearch(supplierSearchTerm, { selectedSupplier });
   const [createPurchaseInvoice] = useCreatePurchaseInvoiceMutation();
   const [updatePurchaseInvoice] = useUpdatePurchaseInvoiceMutation();
   const [deletePurchaseInvoice] = useDeletePurchaseInvoiceMutation();
@@ -540,7 +570,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
   );
 
   const { data: banksData, isLoading: banksLoading } = useGetBanksQuery(
-    { isActive: true },
+    { isActive: true, all: 'true' },
     { staleTime: 5 * 60_000 }
   );
 
@@ -583,7 +613,9 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
     if (activeEditData && activeEditData.isEditMode && activeEditData.invoiceId) {
       // Set the supplier (will be updated with complete data if available)
       if (activeEditData.supplier) {
-        setSelectedSupplier(activeEditData.supplier);
+        const editSupplier = normalizeSupplierParty(activeEditData.supplier);
+        setSelectedSupplier(editSupplier);
+        setSupplierSearchTerm(getSupplierDisplayName(editSupplier || activeEditData.supplier));
       }
 
       // Set the invoice number
@@ -646,10 +678,11 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
   }, [activeEditData?.invoiceId, isEnhancedImportPurchase]); // Only depend on invoiceId to prevent multiple executions
 
   // Fetch complete supplier data when supplier is selected (for immediate balance updates)
+  const selectedSupplierId = getSupplierPartyId(selectedSupplier);
   const { data: completeSupplierData, refetch: refetchSupplier } = useGetSupplierQuery(
-    selectedSupplier?._id,
+    selectedSupplierId,
     {
-      skip: !selectedSupplier?._id,
+      skip: !selectedSupplierId,
       staleTime: 60_000,
       refetchOnMountOrArgChange: true,
     }
@@ -661,8 +694,8 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
       completeSupplierData?.supplier ??
       completeSupplierData?.data?.supplier ??
       completeSupplierData?.data;
-    if (s && (s._id || s.id)) {
-      setSelectedSupplier(s);
+    if (s && getSupplierPartyId(s)) {
+      setSelectedSupplier(normalizeSupplierParty(s));
     }
   }, [completeSupplierData]);
 
@@ -675,37 +708,22 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
     skip: !supplierIdForBalance
   });
 
-  // Trigger search when supplier search term changes
-  useEffect(() => {
-    if (supplierSearchTerm.length > 0) {
-      searchSuppliers(supplierSearchTerm);
-    }
-  }, [supplierSearchTerm, searchSuppliers]);
-
-  // Extract suppliers from search result
-  const suppliers = React.useMemo(() => {
-    if (!suppliersSearchResult) return { data: { suppliers: [] } };
-    return suppliersSearchResult;
-  }, [suppliersSearchResult]);
-
   // Update selected supplier when suppliers data changes (e.g., after cash/bank payment updates balance)
   useEffect(() => {
-    if (selectedSupplier && suppliers?.data?.suppliers) {
-      const updatedSupplier = suppliers.data.suppliers.find(
-        s => s._id === selectedSupplier._id
+    if (selectedSupplier && supplierOptions.length) {
+      const updatedSupplier = supplierOptions.find(
+        (s) => (s._id || s.id) === (selectedSupplier._id || selectedSupplier.id)
       );
       if (updatedSupplier && (
         updatedSupplier.pendingBalance !== selectedSupplier.pendingBalance ||
         updatedSupplier.advanceBalance !== selectedSupplier.advanceBalance ||
         updatedSupplier.currentBalance !== selectedSupplier.currentBalance
       )) {
-        setSelectedSupplier(updatedSupplier);
+        setSelectedSupplier(normalizeSupplierParty(updatedSupplier));
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    // Note: selectedSupplier is intentionally excluded from deps to prevent infinite loops.
-    // We only want to sync when the suppliers list updates, not when selectedSupplier changes.
-  }, [suppliers?.data?.suppliers]);
+  }, [supplierOptions]);
 
 
   // Generate invoice number
@@ -742,30 +760,63 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
   };
 
   const handleSupplierSelect = (supplier) => {
+    const normalized = normalizeSupplierParty(supplier);
+    const prevId = getSupplierPartyId(selectedSupplier);
+    const nextId = getSupplierPartyId(normalized);
+
     // SearchableDropdown passes the full supplier object
-    setSelectedSupplier(supplier);
+    setSelectedSupplier(normalized);
+    // Controlled `searchValue` would otherwise keep the partial query (e.g. "S") in the input
+    setSupplierSearchTerm(normalized ? getSupplierDisplayName(normalized) : '');
 
     // Auto-generate invoice number if enabled
-    if (autoGenerateInvoice && supplier) {
-      setInvoiceNumber(generateInvoiceNumber(supplier));
+    if (autoGenerateInvoice && normalized) {
+      setInvoiceNumber(generateInvoiceNumber(normalized));
     }
 
     // Update tab title to show supplier name
     const activeTab = getActiveTab();
-    if (activeTab && supplier) {
-      updateTabTitle(activeTab.id, `Purchase - ${supplier.companyName || supplier.company_name || supplier.businessName || supplier.displayName || supplier.name || 'Unknown'}`);
+    if (activeTab && normalized) {
+      updateTabTitle(activeTab.id, `Purchase - ${normalized.companyName || normalized.company_name || normalized.businessName || normalized.displayName || normalized.name || 'Unknown'}`);
     }
 
     // Clear cart when supplier changes (only in new purchase mode, not in edit mode)
-    if (purchaseItems.length > 0 && !activeEditData?.isEditMode) {
+    // Only clear if we are changing from one supplier to another, not from no supplier to a supplier
+    const isChangingSupplier = Boolean(prevId && nextId && prevId !== nextId);
+    if (purchaseItems.length > 0 && !activeEditData?.isEditMode && isChangingSupplier) {
       setPurchaseItems([]);
       setHighlightedPurchaseLineIndex(null);
       toast.success('Purchase items cleared due to supplier change. Please re-add products.');
     }
   };
 
+  const resetPurchaseDraft = useCallback(({ resetBillDate = false } = {}) => {
+    setPurchaseItems([]);
+    setHighlightedPurchaseLineIndex(null);
+    setAmountPaid(0);
+    setPaymentMethod('cash');
+    setInvoiceNumber('');
+    setAutoGenerateInvoice(true);
+    setExpectedDelivery(new Date().toISOString().split('T')[0]);
+    if (resetBillDate) {
+      setBillDate(getLocalDateString());
+    }
+    setNotes('');
+    setInlineEditData(null);
+    setPurchaseDuplicateMerge(null);
+    setPurchaseSearchResetKey((k) => k + 1);
+
+    // Reset tab title to default
+    const activeTab = getActiveTab();
+    if (activeTab) {
+      updateTabTitle(activeTab.id, 'Purchase');
+    }
+  }, [getActiveTab, updateTabTitle]);
+
   // Handler functions for purchase invoice mutations
   const handleCreatePurchaseInvoice = async (invoiceData) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     const labelPayload = pendingReceiptLabelPayloadRef.current;
     pendingReceiptLabelPayloadRef.current = null;
     try {
@@ -803,8 +854,8 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
               result?.data?.supplier ??
               result?.data?.data?.supplier ??
               result?.data?.data;
-            if (s && (s._id || s.id)) {
-              setSelectedSupplier(s);
+            if (getSupplierPartyId(s)) {
+              setSelectedSupplier(normalizeSupplierParty(s));
             }
           }).catch(() => { });
         } catch {
@@ -812,36 +863,22 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
         }
       }
 
-      // Also trigger supplier search to update suppliers list (for the useEffect that syncs balances)
-      if (selectedSupplier && searchSuppliers) {
-        const searchTerm = selectedSupplier.companyName || selectedSupplier.name || '';
-        if (searchTerm) {
-          searchSuppliers(searchTerm);
-        }
-      }
+      refetchSuppliers?.();
 
-      setPurchaseItems([]);
-      setHighlightedPurchaseLineIndex(null);
-      // Don't clear selectedSupplier immediately - let it update from refetched data
-      // setSelectedSupplier(null);
-      setAmountPaid(0);
-      setPaymentMethod('cash');
-      setInvoiceNumber('');
-      setExpectedDelivery(new Date().toISOString().split('T')[0]);
-      setBillDate(getLocalDateString()); // Reset Bill Date to today
-      setNotes('');
-
-      // Reset tab title to default
-      const activeTab = getActiveTab();
-      if (activeTab) {
-        updateTabTitle(activeTab.id, 'Purchase');
+      if (tabId) {
+        updateTabProps(tabId, { editData: null });
       }
+      resetPurchaseDraft({ resetBillDate: true });
     } catch (error) {
       toast.error(error?.data?.message || error?.message || 'Failed to complete purchase');
+    } finally {
+      isSubmittingRef.current = false;
     }
   };
 
   const handleUpdatePurchaseInvoice = async (invoiceId, invoiceData) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     try {
       const result = await updatePurchaseInvoice({ id: invoiceId, ...invoiceData }).unwrap();
 
@@ -863,15 +900,15 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
 
       // Immediately refetch supplier to update outstanding balance
       // Only refetch if supplier is selected (query is not skipped)
-      if (selectedSupplier?._id && refetchSupplier && typeof refetchSupplier === 'function') {
+      if (selectedSupplierId && refetchSupplier && typeof refetchSupplier === 'function') {
         try {
           refetchSupplier().then((result) => {
             const s =
               result?.data?.supplier ??
               result?.data?.data?.supplier ??
               result?.data?.data;
-            if (s && (s._id || s.id)) {
-              setSelectedSupplier(s);
+            if (getSupplierPartyId(s)) {
+              setSelectedSupplier(normalizeSupplierParty(s));
             }
           }).catch((error) => {
             if (!error?.message?.includes('has not been started')) {
@@ -885,22 +922,17 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
         }
       }
 
-      // Also trigger supplier search to update suppliers list (for the useEffect that syncs balances)
-      if (selectedSupplier && searchSuppliers) {
-        try {
-          const searchTerm = selectedSupplier.companyName || selectedSupplier.name || '';
-          if (searchTerm) {
-            searchSuppliers(searchTerm);
-          }
-        } catch (error) {
-          // Failed to search suppliers - silent fail
-        }
-      }
+      refetchSuppliers?.();
 
+      if (tabId) {
+        updateTabProps(tabId, { editData: null });
+      }
       if (inlineEditData?.isEditMode) {
-        setInlineEditData(null);
+        resetPurchaseDraft();
         toast.success('Returned to new purchase mode');
       } else {
+        // Clear state before navigating
+        resetPurchaseDraft();
         // Navigate to Purchase Invoices page after successful update
         const componentInfo = getComponentInfo('/purchase-invoices');
         if (componentInfo) {
@@ -916,6 +948,8 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
       }
     } catch (error) {
       toast.error(error?.data?.message || error?.message || 'Failed to update purchase');
+    } finally {
+      isSubmittingRef.current = false;
     }
   };
 
@@ -933,10 +967,54 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
     importChargesTotal,
   });
   // Use centralized ledger balance if available, fallback to entity balance
-  const supplierOutstanding = unifiedBalanceData?.balance ?? (
-    Number(selectedSupplier?.pendingBalance ?? selectedSupplier?.outstandingBalance ?? 0) || 0
+  const supplierLedgerBalanceNum = unifiedBalanceData?.balance ?? (
+    selectedSupplier ? getSupplierOutstanding(selectedSupplier) : 0
   );
-  const totalPayables = total + supplierOutstanding;
+
+  const checkoutSupplierBalances = useMemo(() => {
+    if (!selectedSupplier) {
+      return {
+        previousOutstanding: 0,
+        totalPayables: 0,
+        projectedLedger: 0,
+        invoiceRemaining: 0,
+      };
+    }
+
+    const ledgerBalance = Number.isFinite(Number(supplierLedgerBalanceNum))
+      ? Number(supplierLedgerBalanceNum)
+      : getSupplierOutstanding(selectedSupplier);
+
+    const isEditMode = Boolean(activeEditData?.invoiceId);
+    const invoiceRemaining = Math.max(0, Number(total) - (Number(amountPaid) || 0));
+
+    const printBalances = computeLedgerPrintBalances({
+      ledgerBalance,
+      totalValue: total,
+      receivedAmount: amountPaid || 0,
+      orderData: isEditMode
+        ? { id: activeEditData.invoiceId, isEditMode: true }
+        : null,
+    });
+
+    return {
+      previousOutstanding: printBalances.previousBalance,
+      totalPayables: printBalances.combinedRemainingBalance,
+      projectedLedger: printBalances.combinedRemainingBalance,
+      invoiceRemaining,
+    };
+  }, [
+    selectedSupplier,
+    supplierLedgerBalanceNum,
+    total,
+    amountPaid,
+    activeEditData?.invoiceId,
+    purchaseItems.length,
+    subtotal,
+  ]);
+
+  const { previousOutstanding, totalPayables, projectedLedger: supplierProjectedLedger } =
+    checkoutSupplierBalances;
 
   const getImportAllocatedItems = useCallback(() => {
     if (!isEnhancedImportPurchase || importChargesTotal <= 0 || purchaseItems.length === 0) {
@@ -990,9 +1068,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
     if (existingIndex >= 0) {
       const existingItem = purchaseItems[existingIndex];
       const product = newItem.product || {};
-      const displayName = product.isVariant
-        ? (product.displayName || product.variantName || product.name || 'Unknown Variant')
-        : (product.name || 'Unknown Product');
+      const displayName = getProductDisplayName(product, 'Unknown Product');
       setPurchaseDuplicateMerge({
         productId: String(product._id),
         displayName,
@@ -1000,7 +1076,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
         addQuantity: Number(newItem.quantity) || 0,
         incomingItem: newItem,
       });
-      return;
+      return 'duplicate';
     }
 
     let highlightLineIndex = null;
@@ -1150,12 +1226,14 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
 
 
   const handleProcessPurchase = useCallback(() => {
+    if (isSubmittingRef.current) return;
+
     if (purchaseItems.length === 0) {
       toast.error('No items to purchase');
       return;
     }
 
-    if (!selectedSupplier) {
+    if (!getSupplierPartyId(selectedSupplier)) {
       toast.error('Please select a supplier');
       return;
     }
@@ -1179,7 +1257,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
     // Create purchase invoice data
     const importAllocatedItems = getImportAllocatedItems();
     const invoiceData = {
-      supplier: selectedSupplier.id || selectedSupplier._id,
+      supplier: getSupplierPartyId(selectedSupplier),
       supplierInfo: {
         name: selectedSupplier.name,
         email: selectedSupplier.email,
@@ -1225,7 +1303,8 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
       expectedDelivery: expectedDelivery,
       invoiceDate: billDate || undefined, // Bill Date for backdating (sent as invoiceDate to API, same as Sale page)
       notes: notes,
-      terms: ''
+      terms: '',
+      ...(destinationWarehouseId ? { destinationWarehouseId } : {}),
     };
 
     if (isEnhancedImportPurchase) {
@@ -1433,7 +1512,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
 
   return (
     <AsyncErrorBoundary>
-      <div className="space-y-4 lg:space-y-6">
+      <PageLayout className="space-y-4 lg:space-y-6">
         {/* Modern Header Section */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3">
           <div className="flex flex-col lg:flex-row lg:items-center gap-3 lg:gap-2">
@@ -1478,15 +1557,15 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                           /* ignore */
                         }
                       }
-                      if ((selectedSupplier?.id || selectedSupplier?._id) && refetchSupplier) {
+                      if (selectedSupplierId && refetchSupplier) {
                         try {
                           const result = await refetchSupplier();
                           const s =
                             result?.data?.supplier ??
                             result?.data?.data?.supplier ??
                             result?.data?.data;
-                          if (s && (s._id || s.id)) {
-                            setSelectedSupplier(s);
+                          if (getSupplierPartyId(s)) {
+                            setSelectedSupplier(normalizeSupplierParty(s));
                           }
                         } catch {
                           /* ignore */
@@ -1501,7 +1580,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                 </div>
                 <SupplierPartySelect
                   innerRef={supplierSearchRef}
-                  items={suppliers?.data?.suppliers || suppliers?.suppliers || []}
+                  items={supplierOptions}
                   selectedItem={selectedSupplier}
                   onSelect={handleSupplierSelect}
                   onSearch={setSupplierSearchTerm}
@@ -1518,9 +1597,32 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
               supplier={selectedSupplier}
               canViewBalance={canViewSupplierBalance}
               canViewPhone={canViewSupplierPhone}
-              outstandingOverride={supplierOutstanding}
+              outstandingOverride={supplierProjectedLedger}
               roundOutstanding
             />
+
+            {warehouseInventoryMode && warehouses.length > 0 && (
+              <div className="mt-3 max-w-xs">
+                <label htmlFor="destination-warehouse" className="block text-xs font-medium text-gray-700 mb-1">
+                  Receive stock into
+                </label>
+                <select
+                  id="destination-warehouse"
+                  value={destinationWarehouseId}
+                  onChange={(e) => setDestinationWarehouseId(e.target.value)}
+                  className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm"
+                >
+                  {warehouses.map((w) => {
+                    const id = w.id || w._id;
+                    return (
+                      <option key={id} value={id}>
+                        {w.name}{w.code ? ` (${w.code})` : ''}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1638,29 +1740,21 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                         containerClassName=""
                         inputClassName="w-full pr-20 h-10 text-sm"
                       />
-                      <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">Expected Delivery</label>
-                        <Input
-                          type="date"
-                          autoComplete="off"
-                          value={expectedDelivery}
-                          onChange={(e) => setExpectedDelivery(e.target.value)}
-                          className="h-10 text-sm w-full"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                          Bill Date <span className="text-gray-500">(Optional)</span>
-                        </label>
-                        <Input
-                          type="date"
-                          autoComplete="off"
-                          value={billDate}
-                          onChange={(e) => setBillDate(e.target.value)}
-                          className="h-10 text-sm w-full"
-                          max={getLocalDateString()}
-                        />
-                      </div>
+                      <DateFilter mode="single"
+                        label="Expected Delivery"
+                        value={expectedDelivery}
+                        onChange={setExpectedDelivery}
+                        size="sm"
+                        placeholder="Select date"
+                      />
+                      <DateFilter mode="single"
+                        label={<>Bill Date <span className="text-gray-500 font-normal">(Optional)</span></>}
+                        value={billDate}
+                        onChange={setBillDate}
+                        size="sm"
+                        max={getLocalDateString()}
+                        placeholder="Today"
+                      />
                       <OrderNotesField
                         value={notes}
                         onChange={setNotes}
@@ -1688,27 +1782,23 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                           }
                         }}
                       />
-                      <div className="flex flex-col w-44">
-                        <label className="block text-xs font-medium text-gray-700 mb-1">Expected Delivery</label>
-                        <Input
-                          type="date"
-                          autoComplete="off"
+                      <div className="w-44">
+                        <DateFilter mode="single"
+                          label="Expected Delivery"
                           value={expectedDelivery}
-                          onChange={(e) => setExpectedDelivery(e.target.value)}
-                          className="h-8 text-sm"
+                          onChange={setExpectedDelivery}
+                          size="sm"
+                          placeholder="Select date"
                         />
                       </div>
-                      <div className="flex flex-col w-44">
-                        <label className="block text-xs font-medium text-gray-700 mb-1">
-                          Bill Date <span className="text-gray-500">(Optional)</span>
-                        </label>
-                        <Input
-                          type="date"
-                          autoComplete="off"
+                      <div className="w-44">
+                        <DateFilter mode="single"
+                          label={<>Bill Date <span className="text-gray-500 font-normal">(Optional)</span></>}
                           value={billDate}
-                          onChange={(e) => setBillDate(e.target.value)}
-                          className="h-8 text-sm"
+                          onChange={setBillDate}
+                          size="sm"
                           max={getLocalDateString()}
+                          placeholder="Today"
                         />
                       </div>
                       <OrderNotesField
@@ -1805,9 +1895,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                                 customerInfo: supplierInfoForPrint,
                                 items: purchaseItems.map(item => {
                                   const product = item.product || {};
-                                  const displayName = product.isVariant
-                                    ? (product.displayName || product.variantName || product.name || 'Unknown Variant')
-                                    : (product.name || 'Unknown Product');
+                                  const displayName = getProductDisplayName(product, 'Unknown Product');
 
                                   return {
                                     product: {
@@ -1879,9 +1967,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                                 customerInfo: supplierInfoForPrint,
                                 items: purchaseItems.map(item => {
                                   const product = item.product || {};
-                                  const displayName = product.isVariant
-                                    ? (product.displayName || product.variantName || product.name || 'Unknown Variant')
-                                    : (product.name || 'Unknown Product');
+                                  const displayName = getProductDisplayName(product, 'Unknown Product');
 
                                   return {
                                     product: {
@@ -2046,11 +2132,11 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                             </div>
                           </div>
 
-                          {/* 4. Previous Outstanding */}
+                          {/* 4. Previous Outstanding — before this invoice (matches print) */}
                           <div className="flex flex-col">
                             <span className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">Outstanding</span>
                             <div className="h-8 flex items-center px-2 bg-slate-50 border border-gray-200 rounded-md text-xl font-semibold tabular-nums text-foreground">
-                              {supplierOutstanding.toFixed(2)}
+                              {previousOutstanding.toFixed(2)}
                             </div>
                           </div>
 
@@ -2080,7 +2166,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                             />
                           </div>
 
-                          {/* 6. Total Payables */}
+                          {/* 6. Total Payables — same formula as invoice print Remaining Balance */}
                           <div className="flex flex-col">
                             <span className="text-[10px] uppercase tracking-wider font-bold text-foreground mb-1">Payables</span>
                             <div className="h-8 flex items-center px-2 bg-slate-50 border border-gray-200 rounded-md text-xl font-bold tabular-nums text-primary">
@@ -2137,7 +2223,11 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                     className="p-2 text-gray-400 transition-colors hover:text-gray-600 hover:bg-gray-100 rounded-full"
                     title="Refresh"
                   >
-                    <RefreshCw className={`h-4 w-4 ${isSavedPurchaseLoading ? 'animate-spin' : ''}`} />
+                    {isSavedPurchaseLoading ? (
+                      <LoadingSpinner size="sm" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
                   </button>
                 </div>
               </div>
@@ -2161,7 +2251,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                         showLabel={false}
                       />
                     </div>
-                    
+
                     <div className="flex items-center gap-1 shrink-0">
                       <Button
                         type="button"
@@ -2173,16 +2263,16 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                         <Filter className={`h-4 w-4 ${showMobileFilters ? 'text-primary-600' : 'text-gray-500'}`} />
                       </Button>
 
-                      <ExcelExportButton 
+                      <ExcelExportButton
                         ref={excelExportRef}
-                        getData={getSavedPurchaseInvoicesExportData} 
-                        label="" 
+                        getData={getSavedPurchaseInvoicesExportData}
+                        label=""
                         className="h-10 w-10 p-0 hidden sm:flex"
                       />
-                      <PdfExportButton 
+                      <PdfExportButton
                         ref={pdfExportRef}
-                        getData={getSavedPurchaseInvoicesExportData} 
-                        label="" 
+                        getData={getSavedPurchaseInvoicesExportData}
+                        label=""
                         className="h-10 w-10 p-0 hidden sm:flex"
                       />
 
@@ -2262,8 +2352,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
           <div className="card-content p-0">
             {isSavedPurchaseLoading ? (
               <div className="p-8 text-center">
-                <RefreshCw className="h-8 w-8 animate-spin mx-auto text-gray-400" />
-                <p className="mt-2 text-gray-500">Loading purchase invoices...</p>
+                <LoadingInline message="Loading purchase invoices..." />
               </div>
             ) : savedPurchaseError ? (
               <div className="p-8 text-center text-red-600">
@@ -2275,7 +2364,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
               </div>
             ) : (
               <>
-                <div className="overflow-x-auto">
+                <div className="table-scroll">
                   <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                       <tr>
@@ -2309,14 +2398,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{totalValue.toFixed(2)}</td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                              <div className="flex items-center gap-1">
-                                <button
-                                  onClick={() => openSavedPurchasePrintPreview(invoice)}
-                                  className="text-blue-600 hover:text-blue-900"
-                                  title="View"
-                                >
-                                  <Eye className="h-4 w-4" />
-                                </button>
+                              <div className="flex items-center gap-3">
                                 <button
                                   onClick={() => openSavedPurchasePrintPreview(invoice)}
                                   className="text-green-600 hover:text-green-900"
@@ -2478,7 +2560,7 @@ export const Purchase = ({ tabId, editData, purchaseMode = 'local' }) => {
           onClose={() => setPreviewImageProduct(null)}
         />
 
-      </div>
+      </PageLayout>
     </AsyncErrorBoundary>
   );
 };

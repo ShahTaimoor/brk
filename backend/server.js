@@ -108,6 +108,12 @@ app.use(express.urlencoded({ extended: true }));
 // Cookie parsing middleware (for HTTP-only cookies)
 app.use(cookieParser());
 
+// Title Case normalization for all mutating API requests (before route handlers)
+const { normalizeTextRequest } = require('./middleware/normalizeText');
+const { formatTextResponse } = require('./middleware/formatTextResponse');
+app.use('/api', normalizeTextRequest);
+app.use('/api', formatTextResponse);
+
 // Idempotency key middleware - prevents duplicate requests
 // Note: This middleware uses in-memory storage - consider Redis for production scaling
 const { preventDuplicates } = require('./middleware/duplicatePrevention');
@@ -189,8 +195,6 @@ app.use('/api/account-ledger', require('./routes/accountLedger'));
 app.use('/api/journal-vouchers', require('./routes/journalVouchers'));
 app.use('/api/discounts', require('./routes/discounts'));
 app.use('/api/categories', require('./routes/categories'));
-app.use('/api/sales-performance', require('./routes/salesPerformance'));
-app.use('/api/inventory-reports', require('./routes/inventoryReports'));
 app.use('/api/cash-receipts', require('./routes/cashReceipts'));
 app.use('/api/cash-payments', require('./routes/cashPayments'));
 app.use('/api/bank-receipts', require('./routes/bankReceipts'));
@@ -204,9 +208,12 @@ app.use('/api/backdate-report', require('./routes/backdateReport'));
 app.use('/api/stock-movements', require('./routes/stockMovements'));
 app.use('/api/stock-ledger', require('./routes/stockLedger'));
 app.use('/api/warehouses', require('./routes/warehouses'));
+app.use('/api/shops', require('./routes/shops'));
+app.use('/api/stock-transfers', require('./routes/stockTransfers'));
 app.use('/api/employees', require('./routes/employees'));
 app.use('/api/attendance', require('./routes/attendance'));
 app.use('/api/tills', require('./routes/tills'));
+app.use('/api/daily-cash', require('./routes/dailyCash'));
 app.use('/api/excel-manager', require('./routes/exportManagement'));
 app.use('/api/investors', require('./routes/investors'));
 app.use('/api/drop-shipping', require('./routes/dropShipping'));

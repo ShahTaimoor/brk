@@ -15,9 +15,14 @@ import BarcodeScanner from '@/components/BarcodeScanner';
 import BaseModal from '@/components/BaseModal';
 import { useSensitiveDataPermissions } from '@/hooks/useSensitiveDataPermissions';
 import { compressImageFileToDataUrl } from '@/utils/imageCompress';
-
-/** Max rows shown in dropdown (server search caps higher; we slice in hook). */
-const PRODUCT_DROPDOWN_LIMIT = 50;
+import { getProductDisplayName } from '@/utils/partyDisplay';
+import {
+  getProductCostPrice,
+  getProductDisplayCostPrice,
+  getEffectiveCostForLossCheck,
+} from '@/utils/productCostUtils';
+import { PRODUCT_SEARCH_DROPDOWN_LIMIT } from '@/constants/listPagination';
+import { useCompanyInfo } from '@/hooks/useCompanyInfo';
 /** Cap manual line images stored as data URLs on sales.items */
 const MAX_MANUAL_IMAGE_BYTES = 5 * 1024 * 1024;
 
@@ -29,7 +34,7 @@ function ProductSearchComponent({
   hasCostPricePermission,
   priceType,
   onRefetchReady,
-  dualUnitShowBoxInput = true,
+  dualUnitShowBoxInput = false,
   dualUnitShowPiecesInput = true,
   allowOutOfStock = false,
   allowSaleWithoutProduct = false,
@@ -40,6 +45,9 @@ function ProductSearchComponent({
   onFocusReady,
 }) {
   const { canViewStock } = useSensitiveDataPermissions();
+  const { companyInfo } = useCompanyInfo();
+  const productSearchCameraEnabled =
+    companyInfo?.orderSettings?.productSearchCameraEnabled === true;
 
   const formatDisplayNumber = (value) => {
     const num = Number(value);
@@ -55,6 +63,7 @@ function ProductSearchComponent({
   const [isAddingProduct, setIsAddingProduct] = useState(false);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [searchKey, setSearchKey] = useState(0); // Key to force re-render
+  const [searchRefreshKey, setSearchRefreshKey] = useState(0);
   const [lastPurchasePrice, setLastPurchasePrice] = useState(null);
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [showImagePreview, setShowImagePreview] = useState(false);
@@ -67,6 +76,8 @@ function ProductSearchComponent({
   const productSearchRef = useRef(null);
   const manualNameRef = useRef(null);
   const manualImageInputRef = useRef(null);
+  /** Guards async last-purchase fetch when the user changes selection quickly. */
+  const selectedProductIdRef = useRef(null);
   const dispatch = useDispatch();
 
   const [triggerProducts] = useLazyGetProductsQuery();
@@ -77,21 +88,47 @@ function ProductSearchComponent({
     items: products,
     isLoading: productsLoading,
     emptyMessage: emptySearchMessage,
-  } = useDebouncedPosProductSearch(productSearchTerm, { dropdownLimit: PRODUCT_DROPDOWN_LIMIT });
+  } = useDebouncedPosProductSearch(productSearchTerm, {
+    dropdownLimit: PRODUCT_SEARCH_DROPDOWN_LIMIT,
+    refreshKey: searchRefreshKey,
+  });
 
   const dropdownItems = itemsOverride ?? (products || []);
   const dropdownLoading = loadingOverride ?? productsLoading;
   const dropdownEmptyMessage = emptyMessageOverride ?? emptySearchMessage;
 
-  const refreshProductSearchCache = useCallback(() => {
-    dispatch(
-      productsApi.util.invalidateTags([
-        { type: 'Products', id: 'LIST' },
-        { type: 'Products', id: 'SEARCH' },
-      ])
-    );
-    dispatch(productVariantsApi.util.invalidateTags([{ type: 'Products', id: 'VARIANTS_LIST' }]));
+  const refreshProductSearchCache = useCallback(async () => {
+    await Promise.all([
+      dispatch(
+        productsApi.util.invalidateTags([
+          { type: 'Products', id: 'LIST' },
+          { type: 'Products', id: 'SEARCH' },
+        ])
+      ),
+      dispatch(productVariantsApi.util.invalidateTags([{ type: 'Products', id: 'VARIANTS_LIST' }])),
+    ]);
+    // Re-fetch dropdown browse/search list (local state in useDebouncedPosProductSearch).
+    setSearchRefreshKey((k) => k + 1);
   }, [dispatch]);
+
+  // Keep selected-product stock in sync when the search list refreshes (e.g. after sale/purchase).
+  useEffect(() => {
+    if (!selectedProduct) return;
+    const selectedId = selectedProduct._id || selectedProduct.id;
+    if (!selectedId) return;
+    const fresh = (dropdownItems || []).find(
+      (p) => (p._id || p.id) === selectedId
+    );
+    if (!fresh) return;
+    const prevStock = Number(selectedProduct.inventory?.currentStock ?? 0);
+    const nextStock = Number(fresh.inventory?.currentStock ?? 0);
+    if (prevStock !== nextStock) {
+      setSelectedProduct((prev) => ({
+        ...prev,
+        inventory: { ...(prev.inventory || {}), ...fresh.inventory },
+      }));
+    }
+  }, [dropdownItems, selectedProduct]);
 
   useEffect(() => {
     const handleConfigChange = () => {
@@ -117,25 +154,10 @@ function ProductSearchComponent({
     }
   }, [onFocusReady, focusSearchInput]);
 
-  const getCostPrice = (product) => {
-    if (!product) return 0;
+  const getDisplayCostPrice = (product) => getProductDisplayCostPrice(product);
 
-    const pricing = product.pricing || {};
-    const normalizedCost = pricing.cost
-      ?? pricing.costPrice
-      ?? pricing.cost_price
-      ?? pricing.purchasePrice
-      ?? pricing.purchase_price
-      ?? pricing.wholesaleCost
-      ?? product.pricing?.cost_price
-      ?? product.costPrice
-      ?? product.cost_price
-      ?? product.purchasePrice
-      ?? product.purchase_price;
-
-    const numericCost = Number(normalizedCost);
-    return Number.isFinite(numericCost) ? numericCost : 0;
-  };
+  const getLineEffectiveCost = (product) =>
+    getEffectiveCostForLossCheck(product, lastPurchasePrice);
 
   const calculatePrice = (product, priceType) => {
     if (!product) return 0;
@@ -144,7 +166,7 @@ function ProductSearchComponent({
     const pricing = product.pricing || {};
 
     if (priceType === 'cost') {
-      return getCostPrice(product);
+      return getProductCostPrice(product);
     } else if (priceType === 'distributor') {
       return pricing.distributor || pricing.wholesale || pricing.retail || 0;
     } else if (priceType === 'wholesale') {
@@ -158,24 +180,28 @@ function ProductSearchComponent({
   };
 
   const handleProductSelect = async (product) => {
+    const selectedId = String(product._id ?? product.id ?? '');
+    selectedProductIdRef.current = selectedId;
+
+    setLastPurchasePrice(null);
     setSelectedProduct(product);
     setQuantity(1);
     setIsAddingProduct(true);
 
     // Show selected product/variant name in search field
-    const displayName = product.isVariant
-      ? (product.displayName || product.variantName || product.name)
-      : product.name;
-    setProductSearchTerm(displayName);
+    setProductSearchTerm(getProductDisplayName(product, ''));
 
     // Fetch last purchase price (always, for loss alerts)
     // For variants, use the base product ID to get purchase price
-    const productIdForPrice = product.isVariant ? product.baseProductId : product._id;
+    const productIdForPrice = product.isVariant
+      ? (product.baseProductId ?? product.baseProduct?._id ?? product.baseProduct?.id)
+      : (product._id ?? product.id);
 
     let fetchedLastPurchasePrice = null;
     if (productIdForPrice) {
       try {
         const response = await getLastPurchasePrice(productIdForPrice).unwrap();
+        if (selectedProductIdRef.current !== selectedId) return;
         if (response && response.lastPurchasePrice !== null) {
           fetchedLastPurchasePrice = Number(response.lastPurchasePrice);
           setLastPurchasePrice(fetchedLastPurchasePrice);
@@ -186,6 +212,7 @@ function ProductSearchComponent({
           setLastPurchasePrice(null);
         }
       } catch (error) {
+        if (selectedProductIdRef.current !== selectedId) return;
         // Silently fail - last purchase price is optional
         setLastPurchasePrice(null);
       }
@@ -215,8 +242,8 @@ function ProductSearchComponent({
       
       // Fetch both products and variants by code
       const [pRes, vRes] = await Promise.all([
-        triggerProducts({ code: barcodeValue, status: 'active', limit: 2 }).unwrap(),
-        triggerVariants({ code: barcodeValue, status: 'active', limit: 2 }).unwrap()
+        triggerProducts({ code: barcodeValue, status: 'active', limit: 2 }, false).unwrap(),
+        triggerVariants({ code: barcodeValue, status: 'active', limit: 2 }, false).unwrap()
       ]);
 
       const foundProducts = pRes?.products ?? pRes?.data?.products ?? [];
@@ -250,7 +277,7 @@ function ProductSearchComponent({
       // Check stock if not allowed to oversell
       const currentStock = product.inventory?.currentStock || 0;
       if (!allowOutOfStock && currentStock === 0) {
-        toast.error(`${product.name} is out of stock.`);
+        toast.error(`${getProductDisplayName(product, 'Product')} is out of stock.`);
         return;
       }
 
@@ -258,7 +285,9 @@ function ProductSearchComponent({
       let unitPrice = calculatePrice(product, priceType);
       if (priceType === 'cost') {
         try {
-          const productIdForPrice = product.isVariant ? product.baseProductId : product._id;
+          const productIdForPrice = product.isVariant
+      ? (product.baseProductId ?? product.baseProduct?._id ?? product.baseProduct?.id)
+      : (product._id ?? product.id);
           if (productIdForPrice) {
             const response = await getLastPurchasePrice(productIdForPrice).unwrap();
             const fetched = Number(response?.lastPurchasePrice);
@@ -272,23 +301,28 @@ function ProductSearchComponent({
       }
       
       // Check for loss warning (sale < cost)
-      const costPrice = getCostPrice(product); // Simplified for auto-add to avoid blocking confirm dialogs
+      const costPrice = getProductCostPrice(product); // Simplified for auto-add to avoid blocking confirm dialogs
       if (unitPrice < costPrice) {
-        toast.warning(`Auto-added ${product.name} with price BELOW cost!`, { duration: 4000 });
+        toast.warning(`Auto-added ${getProductDisplayName(product, 'Product')} with price BELOW cost!`, { duration: 4000 });
       }
 
       // Add to cart
       const ppb = getPiecesPerBox(product);
       const { boxes, pieces } = ppb ? piecesToBoxesAndPieces(1, ppb) : {};
       
-      onAddProduct({
+      const addResult = onAddProduct({
         product,
         quantity: 1,
         ...(ppb && { boxes, pieces }),
         unitPrice: unitPrice
       });
 
-      toast.success(`Scanned: ${product.name}`, {
+      if (addResult === 'duplicate') {
+        productSearchRef.current?.blur();
+        return;
+      }
+
+      toast.success(`Scanned: ${getProductDisplayName(product, 'Product')}`, {
         icon: '✅',
         duration: 2000,
         position: 'top-center'
@@ -296,6 +330,8 @@ function ProductSearchComponent({
 
       // Clear search and focus back
       setProductSearchTerm('');
+      selectedProductIdRef.current = null;
+      setLastPurchasePrice(null);
       setSelectedProduct(null);
       setIsAddingProduct(false);
 
@@ -493,7 +529,7 @@ function ProductSearchComponent({
       const unitPrice = parseFloat(customRate) || Number(calculatedRate) || 0;
 
       // Check if sale price is less than cost price (always check, regardless of showCostPrice)
-      const costPrice = lastPurchasePrice !== null ? lastPurchasePrice : getCostPrice(selectedProduct);
+      const costPrice = getLineEffectiveCost(selectedProduct);
       if (costPrice !== undefined && costPrice !== null && unitPrice < costPrice) {
         const loss = costPrice - unitPrice;
         const lossPercent = ((loss / costPrice) * 100).toFixed(1);
@@ -515,14 +551,21 @@ function ProductSearchComponent({
 
       const ppb = getPiecesPerBox(selectedProduct);
       const { boxes, pieces } = ppb ? piecesToBoxesAndPieces(quantity, ppb) : {};
-      onAddProduct({
+      const addResult = onAddProduct({
         product: selectedProduct,
         quantity: quantity,
         ...(ppb && { boxes, pieces }),
         unitPrice: unitPrice
       });
 
+      if (addResult === 'duplicate') {
+        productSearchRef.current?.blur();
+        return;
+      }
+
       // Reset form
+      selectedProductIdRef.current = null;
+      setLastPurchasePrice(null);
       setSelectedProduct(null);
       setQuantity(0);
       setCustomRate('');
@@ -575,6 +618,8 @@ function ProductSearchComponent({
         setTimeout(() => productSearchRef.current?.focus({ preventScroll: true }), 100);
       } else if (isAddingProduct) {
         e.preventDefault();
+        selectedProductIdRef.current = null;
+        setLastPurchasePrice(null);
         setSelectedProduct(null);
         setQuantity(0);
         setCustomRate('');
@@ -589,10 +634,7 @@ function ProductSearchComponent({
     const isLowStock = inventory.currentStock <= inventory.reorderPoint;
     const isOutOfStock = inventory.currentStock === 0;
 
-    // Get display name - use variant display name if it's a variant
-    const displayName = product.isVariant
-      ? (product.displayName || product.variantName || product.name)
-      : product.name;
+    const displayName = getProductDisplayName(product, 'Product');
 
     // Get pricing based on selected price type
     const pricing = product.pricing || {};
@@ -600,7 +642,7 @@ function ProductSearchComponent({
     let priceLabel = 'Wholesale';
 
     if (priceType === 'cost') {
-      unitPrice = getCostPrice(product);
+      unitPrice = getProductCostPrice(product);
       priceLabel = 'Cost';
     } else if (priceType === 'wholesale') {
       unitPrice = pricing.wholesale || pricing.retail || 0;
@@ -610,7 +652,7 @@ function ProductSearchComponent({
       priceLabel = 'Retail';
     }
 
-    const purchasePrice = getCostPrice(product);
+    const purchasePrice = getProductCostPrice(product);
 
     // Show variant indicator
     const variantInfo = product.isVariant
@@ -661,13 +703,14 @@ function ProductSearchComponent({
           : 'col-span-7';
   /** Dual-unit uses two regular-width columns: Box + Qty */
   const quantityColClass = dualUnit ? 'col-span-2' : 'col-span-1';
+  const showStockField = !isManualMode && canViewStock;
 
   return (
     <div className="space-y-4">
       {/* Product Selection - Responsive Layout */}
       <div>
-        {/* Mobile Layout */}
-        <div className="md:hidden space-y-3">
+        {/* Mobile & tablet layout */}
+        <div className="lg:hidden space-y-3">
           {/* Product Search */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -689,22 +732,29 @@ function ProductSearchComponent({
                       loading={dropdownLoading}
                       emptyMessage={dropdownEmptyMessage}
                       value={productSearchTerm}
+                      serverSideSearch
+                      openOnFocus
+                      maxInitialItems={PRODUCT_SEARCH_DROPDOWN_LIMIT}
                     />
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowBarcodeScanner(true)}
-                    className="px-3 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors flex items-center justify-center flex-shrink-0"
-                    title="Scan barcode to search product"
-                  >
-                    <Camera className="h-5 w-5 text-gray-600" />
-                  </button>
+                  {productSearchCameraEnabled ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowBarcodeScanner(true)}
+                      className="px-3 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors flex items-center justify-center flex-shrink-0"
+                      title="Scan barcode to search product"
+                    >
+                      <Camera className="h-5 w-5 text-gray-600" />
+                    </button>
+                  ) : null}
                   {allowSaleWithoutProduct && (
                     <button
                       type="button"
                       onClick={() => {
                         setIsManualMode(true);
                         setIsAddingProduct(true);
+                        selectedProductIdRef.current = null;
+                        setLastPurchasePrice(null);
                         setSelectedProduct(null);
                         setCalculatedRate(0);
                         setTimeout(() => manualNameRef.current?.focus({ preventScroll: true }), 100);
@@ -789,26 +839,23 @@ function ProductSearchComponent({
             </div>
           </div>
 
-          {/* Fields Grid - 2 columns on mobile */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Fields Grid - single row on mobile/tablet */}
+          <div className={`grid gap-2 ${showStockField ? 'grid-cols-4' : 'grid-cols-3'}`}>
             {/* Stock */}
-            {!isManualMode && canViewStock && (
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
+            {showStockField && (
+              <div className="min-w-0">
+                <label className="block text-[10px] font-medium text-gray-700 mb-1 truncate">
                   Stock
                 </label>
                 <span
-                  className="text-sm font-semibold text-gray-700 bg-gray-100 px-2 py-2 rounded border border-gray-200 block text-center min-h-[2.5rem] flex flex-col items-center justify-center gap-0.5 leading-tight"
+                  className="text-xs font-semibold text-gray-700 bg-gray-100 px-1 py-1.5 rounded border border-gray-200 block text-center min-h-[2rem] flex flex-col items-center justify-center gap-0.5 leading-tight"
                   title={selectedProduct ? `Available stock (pieces)` : ''}
                 >
                   {selectedProduct ? (
                     hasDualUnit(selectedProduct) ? (
-                      <>
-                        <span className="text-xs">{formatStockDualLabel(selectedProduct.inventory?.currentStock ?? 0, selectedProduct)}</span>
-
-                      </>
+                      <span className="text-[10px] leading-tight">{formatStockDualLabel(selectedProduct.inventory?.currentStock ?? 0, selectedProduct)}</span>
                     ) : (
-                      <span>{selectedProduct.inventory?.currentStock ?? 0} pcs</span>
+                      <span>{selectedProduct.inventory?.currentStock ?? 0}</span>
                     )
                   ) : (
                     '0'
@@ -818,8 +865,8 @@ function ProductSearchComponent({
             )}
 
             {/* Amount */}
-            <div className={isManualMode ? 'col-span-1' : ''}>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
+            <div className="min-w-0">
+              <label className="block text-[10px] font-medium text-gray-700 mb-1 truncate">
                 Amount
               </label>
               <Input
@@ -827,23 +874,26 @@ function ProductSearchComponent({
                 readOnly
                 value={isAddingProduct ? formatDisplayNumber(quantity * (parseFloat(customRate || 0) || 0)) : 0}
                 onFocus={(e) => e.target.select()}
-                className="text-center h-10 bg-gray-100 font-semibold text-gray-700"
+                className="text-center h-8 px-1 bg-gray-100 font-semibold text-gray-700 text-sm"
               />
             </div>
 
             {/* Box + Qty (dual unit): no parent "Quantity" label — matches cart columns */}
-            <div className={(!isManualMode && dualUnit) ? 'col-span-2' : ''}>
+            <div className="min-w-0">
               {(!isManualMode && !dualUnit) || isManualMode ? (
-                <label className="block text-xs font-medium text-gray-700 mb-1">
+                <label className="block text-[10px] font-medium text-gray-700 mb-1 truncate">
                   Quantity
                 </label>
-              ) : null}
+              ) : (
+                <label className="block text-[10px] font-medium text-gray-700 mb-1 truncate">
+                  Qty
+                </label>
+              )}
               {!isManualMode && dualUnit ? (
                 (dualUnitShowBoxInput || dualUnitShowPiecesInput) ? (
-                  <div className={`grid ${dualUnitShowBoxInput && dualUnitShowPiecesInput ? 'grid-cols-2' : 'grid-cols-1'} gap-2`}>
+                  <div className={`grid ${dualUnitShowBoxInput && dualUnitShowPiecesInput ? 'grid-cols-2' : 'grid-cols-1'} gap-1`}>
                     {dualUnitShowBoxInput && (
-                      <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">Box</label>
+                      <div className="min-w-0">
                         <Input
                           type="number"
                           min="0"
@@ -859,13 +909,14 @@ function ProductSearchComponent({
                           }}
                           onFocus={(e) => e.target.select()}
                           onKeyDown={handleKeyDown}
-                          className="text-center h-10"
+                          className="text-center h-8 px-1 text-sm"
+                          placeholder="Box"
+                          aria-label="Box quantity"
                         />
                       </div>
                     )}
                     {dualUnitShowPiecesInput && (
-                      <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">Qty</label>
+                      <div className="min-w-0">
                         <Input
                           type="number"
                           min="1"
@@ -877,7 +928,9 @@ function ProductSearchComponent({
                           }}
                           onFocus={(e) => e.target.select()}
                           onKeyDown={handleKeyDown}
-                          className="text-center h-10"
+                          className="text-center h-8 px-1 text-sm"
+                          placeholder="Qty"
+                          aria-label="Piece quantity"
                         />
                       </div>
                     )}
@@ -893,7 +946,7 @@ function ProductSearchComponent({
                     showBoxInput={false}
                     showPiecesInput={false}
                     onKeyDown={handleKeyDown}
-                    inputClassName="text-center h-10 border border-gray-300 rounded px-2 w-full"
+                    inputClassName="text-center h-8 border border-gray-300 rounded px-1 w-full text-sm"
                     compact
                   />
                 )
@@ -905,14 +958,14 @@ function ProductSearchComponent({
                   onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 0))}
                   onFocus={(e) => e.target.select()}
                   onKeyDown={handleKeyDown}
-                  className="text-center h-10"
+                  className="text-center h-8 px-1 text-sm"
                 />
               )}
             </div>
 
             {/* Rate */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
+            <div className="min-w-0">
+              <label className="block text-[10px] font-medium text-gray-700 mb-1 truncate">
                 Rate
               </label>
               <Input
@@ -923,7 +976,7 @@ function ProductSearchComponent({
                 onChange={(e) => setCustomRate(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onFocus={(e) => e.target.select()}
-                className="text-center h-10"
+                className="text-center h-8 px-1 text-sm"
                 placeholder="0"
                 required
               />
@@ -931,7 +984,7 @@ function ProductSearchComponent({
 
             {/* Cost - Full width if shown */}
             {showCostPrice && hasCostPricePermission && (
-              <div className="col-span-2">
+              <div className={showStockField ? 'col-span-4' : 'col-span-3'}>
                 <label className="block text-xs font-medium text-gray-700 mb-1">
                   Cost
                 </label>
@@ -949,11 +1002,9 @@ function ProductSearchComponent({
                   />
                 ) : (
                   <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-2 rounded border border-red-200 block text-center h-10 flex items-center justify-center" title="Cost Price">
-                    {lastPurchasePrice !== null
-                      ? `${Math.round(lastPurchasePrice)}`
-                      : (selectedProduct?.pricing?.cost !== undefined && selectedProduct?.pricing?.cost !== null)
-                        ? `${Math.round(selectedProduct.pricing.cost)}`
-                        : selectedProduct ? 'N/A' : '0'}
+                    {selectedProduct
+                      ? (getDisplayCostPrice(selectedProduct) ?? 'N/A')
+                      : '0'}
                   </span>
                 )}
               </div>
@@ -979,7 +1030,7 @@ function ProductSearchComponent({
 
         {/* Desktop Layout — items-start for quantity column alignment */}
         <div 
-          className={`hidden md:grid gap-x-1 items-start pb-2 border-b border-gray-200 mb-1 ${
+          className={`hidden lg:grid gap-x-1 items-start pb-2 border-b border-gray-200 mb-1 ${
             dualUnitShowBoxInput
               ? (showCostPrice && hasCostPricePermission
                   ? 'grid-cols-[2.25rem_minmax(0,1fr)_4.75rem_5.35rem_5.35rem_5rem_5.35rem_5.35rem_2.25rem]'
@@ -1010,22 +1061,29 @@ function ProductSearchComponent({
                       loading={dropdownLoading}
                       emptyMessage={dropdownEmptyMessage}
                       value={productSearchTerm}
+                      serverSideSearch
+                      openOnFocus
+                      maxInitialItems={PRODUCT_SEARCH_DROPDOWN_LIMIT}
                     />
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowBarcodeScanner(true)}
-                    className="h-10 px-2 border border-gray-300 rounded-md hover:bg-gray-100 hover:border-gray-400 transition-all flex items-center justify-center flex-shrink-0 bg-white"
-                    title="Scan barcode"
-                  >
-                    <Camera className="h-4 w-4 text-gray-600" />
-                  </button>
+                  {productSearchCameraEnabled ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowBarcodeScanner(true)}
+                      className="h-10 px-2 border border-gray-300 rounded-md hover:bg-gray-100 hover:border-gray-400 transition-all flex items-center justify-center flex-shrink-0 bg-white"
+                      title="Scan barcode"
+                    >
+                      <Camera className="h-4 w-4 text-gray-600" />
+                    </button>
+                  ) : null}
                   {allowSaleWithoutProduct && (
                     <button
                       type="button"
                       onClick={() => {
                         setIsManualMode(true);
                         setIsAddingProduct(true);
+                        selectedProductIdRef.current = null;
+                        setLastPurchasePrice(null);
                         setSelectedProduct(null);
                         setCalculatedRate(0);
                         setTimeout(() => manualNameRef.current?.focus({ preventScroll: true }), 100);
@@ -1161,9 +1219,9 @@ function ProductSearchComponent({
                 />
               ) : (
                 <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-2 rounded border border-red-200 block text-center h-10 flex items-center justify-center" title="Cost Price">
-                  {!isManualMode && selectedProduct ? (
-                    lastPurchasePrice !== null ? Math.round(lastPurchasePrice) : (selectedProduct?.pricing?.cost ? Math.round(selectedProduct.pricing.cost) : 'N/A')
-                  ) : '0'}
+                  {!isManualMode && selectedProduct
+                    ? (getDisplayCostPrice(selectedProduct) ?? 'N/A')
+                    : '0'}
                 </span>
               )}
             </div>
@@ -1216,14 +1274,16 @@ function ProductSearchComponent({
       </div>
 
       {/* Barcode Scanner Modal */}
-      <BarcodeScanner
-        isOpen={showBarcodeScanner}
-        onClose={() => setShowBarcodeScanner(false)}
-        onScan={(barcodeValue) => {
-          handleBarcodeSubmit(barcodeValue);
-          setShowBarcodeScanner(false);
-        }}
-      />
+      {productSearchCameraEnabled ? (
+        <BarcodeScanner
+          isOpen={showBarcodeScanner}
+          onClose={() => setShowBarcodeScanner(false)}
+          onScan={(barcodeValue) => {
+            handleBarcodeSubmit(barcodeValue);
+            setShowBarcodeScanner(false);
+          }}
+        />
+      ) : null}
 
       {/* Product Image Preview Modal */}
       <BaseModal

@@ -46,7 +46,7 @@ export const inventoryApi = api.injectEndpoints({
     }),
     createStockAdjustment: builder.mutation({
       query: (data) => ({
-        url: 'inventory/stock-adjustments',
+        url: 'inventory/adjustments',
         method: 'post',
         data,
       }),
@@ -54,6 +54,7 @@ export const inventoryApi = api.injectEndpoints({
         { type: 'Inventory', id: 'LIST' },
         { type: 'Inventory', id: 'SUMMARY' },
         { type: 'Inventory', id: 'LOW_STOCK' },
+        { type: 'Inventory', id: 'TRANSFERS' },
         { type: 'Inventory', id: 'MOVEMENTS' },
         { type: 'Inventory', id: 'MOVEMENTS_LIST' },
         { type: 'Inventory', id: 'MOVEMENTS_STATS' },
@@ -76,6 +77,7 @@ export const inventoryApi = api.injectEndpoints({
         { type: 'Inventory', id: 'LIST' },
         { type: 'Inventory', id: 'SUMMARY' },
         { type: 'Inventory', id: 'LOW_STOCK' },
+        { type: 'Inventory', id: 'TRANSFERS' },
         { type: 'Inventory', id: 'MOVEMENTS' },
         { type: 'Inventory', id: 'MOVEMENTS_LIST' },
         { type: 'Inventory', id: 'MOVEMENTS_STATS' },
@@ -163,11 +165,9 @@ export const inventoryApi = api.injectEndpoints({
     // Stock Movements
     getStockMovements: builder.query({
       query: (params) => {
-        // Filter out empty string parameters
         const filteredParams = {};
         Object.keys(params || {}).forEach(key => {
           const value = params[key];
-          // Only include non-empty values (skip empty strings, null, undefined)
           if (value !== '' && value !== null && value !== undefined) {
             filteredParams[key] = value;
           }
@@ -183,6 +183,33 @@ export const inventoryApi = api.injectEndpoints({
       },
       keepUnusedDataFor: 60,
       providesTags: [{ type: 'Inventory', id: 'MOVEMENTS' }],
+    }),
+    getProductStockMovements: builder.query({
+      query: ({ productId, ...params }) => {
+        const filteredParams = {};
+        Object.keys(params || {}).forEach(key => {
+          const value = params[key];
+          if (value !== '' && value !== null && value !== undefined) {
+            filteredParams[key] = value;
+          }
+        });
+        return {
+          url: `stock-movements/product/${productId}`,
+          method: 'get',
+          params: filteredParams,
+        };
+      },
+      providesTags: (_res, _err, { productId }) => [
+        { type: 'Inventory', id: `MOVEMENTS_PRODUCT_${productId}` },
+      ],
+    }),
+    getStockReconciliation: builder.query({
+      query: (params) => ({
+        url: 'stock-movements/reconciliation',
+        method: 'get',
+        params: params || {},
+      }),
+      providesTags: [{ type: 'Inventory', id: 'RECONCILIATION' }],
     }),
     getStockMovementStats: builder.query({
       query: (params) => {
@@ -269,130 +296,6 @@ export const inventoryApi = api.injectEndpoints({
         { type: 'Reports', id: 'STOCK_MOVEMENTS_STATS' },
       ],
     }),
-    // Inventory Reports
-    getReports: builder.query({
-      query: (params) => {
-        // Filter out empty string parameters
-        const filteredParams = {};
-        Object.keys(params || {}).forEach(key => {
-          const value = params[key];
-          // Only include non-empty values (skip empty strings, null, undefined)
-          if (value !== '' && value !== null && value !== undefined) {
-            filteredParams[key] = value;
-          }
-        });
-        return {
-          url: 'inventory-reports',
-          method: 'get',
-          params: filteredParams,
-        };
-      },
-      providesTags: [{ type: 'Inventory', id: 'REPORTS' }],
-    }),
-    getReport: builder.query({
-      query: (id) => ({
-        url: `inventory-reports/${id}`,
-        method: 'get',
-      }),
-      providesTags: (_r, _e, id) => [{ type: 'Inventory', id: `REPORT_${id}` }],
-    }),
-    getQuickSummary: builder.query({
-      query: () => ({
-        url: 'inventory-reports/quick/summary',
-        method: 'get',
-      }),
-      providesTags: [{ type: 'Inventory', id: 'REPORTS_SUMMARY' }],
-    }),
-    getQuickStockLevels: builder.query({
-      query: (params) => {
-        // Filter out empty string parameters
-        const filteredParams = {};
-        Object.keys(params || {}).forEach(key => {
-          const value = params[key];
-          // Only include non-empty values (skip empty strings, null, undefined)
-          if (value !== '' && value !== null && value !== undefined) {
-            filteredParams[key] = value;
-          }
-        });
-        return {
-          url: 'inventory-reports/quick/stock-levels',
-          method: 'get',
-          params: filteredParams,
-        };
-      },
-      providesTags: [{ type: 'Inventory', id: 'REPORTS_STOCK_LEVELS' }],
-    }),
-    getQuickTurnoverRates: builder.query({
-      query: (params) => {
-        // Filter out empty string parameters
-        const filteredParams = {};
-        Object.keys(params || {}).forEach(key => {
-          const value = params[key];
-          // Only include non-empty values (skip empty strings, null, undefined)
-          if (value !== '' && value !== null && value !== undefined) {
-            filteredParams[key] = value;
-          }
-        });
-        return {
-          url: 'inventory-reports/quick/turnover-rates',
-          method: 'get',
-          params: filteredParams,
-        };
-      },
-      providesTags: [{ type: 'Inventory', id: 'REPORTS_TURNOVER' }],
-    }),
-    getQuickAgingAnalysis: builder.query({
-      query: (params) => {
-        // Filter out empty string parameters
-        const filteredParams = {};
-        Object.keys(params || {}).forEach(key => {
-          const value = params[key];
-          // Only include non-empty values (skip empty strings, null, undefined)
-          if (value !== '' && value !== null && value !== undefined) {
-            filteredParams[key] = value;
-          }
-        });
-        return {
-          url: 'inventory-reports/quick/aging-analysis',
-          method: 'get',
-          params: filteredParams,
-        };
-      },
-      providesTags: [{ type: 'Inventory', id: 'REPORTS_AGING' }],
-    }),
-    createReport: builder.mutation({
-      query: (data) => ({
-        url: 'inventory-reports/generate',
-        method: 'post',
-        data,
-      }),
-      invalidatesTags: [
-        { type: 'Inventory', id: 'REPORTS' },
-        { type: 'Inventory', id: 'REPORTS_SUMMARY' },
-      ],
-    }),
-    deleteReport: builder.mutation({
-      query: (id) => ({
-        url: `inventory-reports/${id}`,
-        method: 'delete',
-      }),
-      invalidatesTags: (_r, _e, id) => [
-        { type: 'Inventory', id: 'REPORTS' },
-        { type: 'Inventory', id: 'REPORTS_SUMMARY' },
-        { type: 'Inventory', id: `REPORT_${id}` },
-      ],
-    }),
-    toggleFavoriteReport: builder.mutation({
-      query: ({ reportId, isFavorite }) => ({
-        url: `inventory-reports/${reportId}/favorite`,
-        method: 'put',
-        data: { isFavorite },
-      }),
-      invalidatesTags: (_r, _e, { reportId }) => [
-        { type: 'Inventory', id: 'REPORTS' },
-        { type: 'Inventory', id: `REPORT_${reportId}` },
-      ],
-    }),
   }),
   overrideExisting: false,
 });
@@ -408,18 +311,11 @@ export const {
   useGeneratePurchaseOrdersMutation,
   useGetStockLedgerQuery,
   useGetStockMovementsQuery,
+  useGetProductStockMovementsQuery,
+  useGetStockReconciliationQuery,
   useGetStockMovementStatsQuery,
   useCreateStockMovementMutation,
   useCreateStockMovementAdjustmentMutation,
   useReverseStockMovementMutation,
-  useGetReportsQuery,
-  useGetReportQuery,
-  useGetQuickSummaryQuery,
-  useGetQuickStockLevelsQuery,
-  useGetQuickTurnoverRatesQuery,
-  useGetQuickAgingAnalysisQuery,
-  useCreateReportMutation, 
-  useDeleteReportMutation, 
-  useToggleFavoriteReportMutation,
 } = inventoryApi;
 

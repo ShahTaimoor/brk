@@ -14,7 +14,9 @@ import {
   Clock3,
   User,
   TrendingUp,
-  BarChart3
+  BarChart3,
+  Camera,
+  MapPin
 } from 'lucide-react';
 import {
   useGetStatusQuery,
@@ -25,13 +27,17 @@ import {
   useStartBreakMutation,
   useEndBreakMutation,
 } from '../store/services/attendanceApi';
+import { useUploadProductImageMutation } from '../store/services/productsApi';
 import { useGetEmployeesQuery } from '../store/services/employeesApi';
 import { useAuth } from '../contexts/AuthContext';
-import { LoadingSpinner, LoadingButton } from '../components/LoadingSpinner';
+import { LoadingSpinner, LoadingButton, LoadingPage, LoadingInline } from '../components/LoadingSpinner';
 import { handleApiError, showSuccessToast, showErrorToast } from '../utils/errorHandler';
 import { formatDate, formatTime } from '../utils/formatters';
 import { toast } from 'sonner';
 import PageShell from '../components/PageShell';
+import { PageHeader } from '../components/layout/PageHeader';
+import ConfirmationDialog from '../components/ConfirmationDialog';
+import DateFilter from '../components/DateFilter';
 
 const Attendance = () => {
   const { user, hasPermission } = useAuth();
@@ -45,6 +51,28 @@ const Attendance = () => {
   });
   const [notesIn, setNotesIn] = useState('');
   const [notesOut, setNotesOut] = useState('');
+  const [currentTime, setCurrentTime] = useState(new Date());
+  
+  // Confirmation states
+  const [showClockInConfirm, setShowClockInConfirm] = useState(false);
+  const [showClockOutConfirm, setShowClockOutConfirm] = useState(false);
+  
+  // Capture states
+  const [photo, setPhoto] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState('');
+  const [location, setLocation] = useState(null);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [locationError, setLocationError] = useState('');
+  
+  const [uploadImage, { isLoading: isUploadingImage }] = useUploadProductImageMutation();
+
+  // Timer to update active shift duration
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 60000); // Update every minute
+    return () => clearInterval(timer);
+  }, []);
 
   // Check if user can view team attendance
   useEffect(() => {
@@ -145,13 +173,76 @@ const Attendance = () => {
   // End break mutation
   const [endBreakMutation, { isLoading: endBreakLoading }] = useEndBreakMutation();
 
+  const handleOpenClockIn = () => {
+    resetCaptureStates();
+    fetchLocation();
+    setShowClockInConfirm(true);
+  };
+
+  const handleOpenClockOut = () => {
+    resetCaptureStates();
+    fetchLocation();
+    setShowClockOutConfirm(true);
+  };
+
+  const resetCaptureStates = () => {
+    setPhoto(null);
+    setPhotoPreview('');
+    setLocation(null);
+    setLocationError('');
+  };
+
+  const fetchLocation = () => {
+    setLocationLoading(true);
+    setLocationError('');
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setLocation({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy
+          });
+          setLocationLoading(false);
+        },
+        (error) => {
+          setLocationError('Location access denied.');
+          setLocationLoading(false);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    } else {
+      setLocationError('Geolocation not supported.');
+      setLocationLoading(false);
+    }
+  };
+
+  const handlePhotoChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setPhoto(file);
+      setPhotoPreview(URL.createObjectURL(file));
+    }
+  };
+
   const handleClockIn = async () => {
     try {
+      let imageUrl = null;
+      if (photo) {
+        const formData = new FormData();
+        formData.append('image', photo);
+        const uploadRes = await uploadImage(formData).unwrap();
+        imageUrl = uploadRes.data?.urls?.optimized || uploadRes.data?.url || null;
+      }
+
       await clockInMutation({
-        notesIn: notesIn.trim() || undefined
+        notesIn: notesIn.trim() || undefined,
+        imageIn: imageUrl,
+        locationIn: location
       }).unwrap();
       showSuccessToast('Clocked in successfully');
       setNotesIn('');
+      setShowClockInConfirm(false);
       refetchStatus();
       refetchMyAttendance();
     } catch (error) {
@@ -161,11 +252,22 @@ const Attendance = () => {
 
   const handleClockOut = async () => {
     try {
+      let imageUrl = null;
+      if (photo) {
+        const formData = new FormData();
+        formData.append('image', photo);
+        const uploadRes = await uploadImage(formData).unwrap();
+        imageUrl = uploadRes.data?.urls?.optimized || uploadRes.data?.url || null;
+      }
+
       await clockOutMutation({
-        notesOut: notesOut.trim() || undefined
+        notesOut: notesOut.trim() || undefined,
+        imageOut: imageUrl,
+        locationOut: location
       }).unwrap();
       showSuccessToast('Clocked out successfully');
       setNotesOut('');
+      setShowClockOutConfirm(false);
       refetchStatus();
       refetchMyAttendance();
     } catch (error) {
@@ -205,7 +307,7 @@ const Attendance = () => {
 
   const calculateCurrentDuration = (clockInAt) => {
     if (!clockInAt) return 0;
-    const now = new Date();
+    const now = currentTime;
     const clockIn = new Date(clockInAt);
     const diffMs = now - clockIn;
     const totalBreakMinutes = currentSession?.breaks?.reduce((sum, b) => {
@@ -226,6 +328,15 @@ const Attendance = () => {
     return currentSession?.breaks?.find(b => !b.endedAt);
   };
 
+  const calculateActiveBreakDuration = () => {
+    const activeBreak = getActiveBreak();
+    if (!activeBreak || !activeBreak.startedAt) return 0;
+    const now = currentTime;
+    const breakStart = new Date(activeBreak.startedAt);
+    const diffMs = now - breakStart;
+    return Math.max(0, Math.round(diffMs / 60000));
+  };
+
   const attendanceList = viewMode === 'my' 
     ? (myAttendanceData?.data || [])
     : (teamAttendanceData?.data || []);
@@ -234,7 +345,7 @@ const Attendance = () => {
 
   // Calculate weekly hours (for current week) - for "my" view
   const getWeeklyHours = () => {
-    const now = new Date();
+    const now = currentTime;
     const startOfWeek = new Date(now);
     startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
     startOfWeek.setHours(0, 0, 0, 0);
@@ -268,7 +379,7 @@ const Attendance = () => {
       return 0;
     }
     
-    const todayDate = new Date();
+    const todayDate = currentTime;
     todayDate.setHours(0, 0, 0, 0);
     
     // Get unique employees who clocked in today with open sessions
@@ -296,7 +407,7 @@ const Attendance = () => {
       return 0;
     }
     
-    const todayDate = new Date();
+    const todayDate = currentTime;
     todayDate.setHours(0, 0, 0, 0);
     const expectedStartTime = new Date(todayDate);
     expectedStartTime.setHours(9, 0, 0, 0); // 9 AM expected start
@@ -320,32 +431,29 @@ const Attendance = () => {
 
   return (
     <PageShell className="bg-gray-50/30" maxWidthClassName="max-w-7xl" contentClassName="space-y-6 p-4 md:p-8">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900 tracking-tight flex items-center">
-            <div className="bg-primary-100 p-2 rounded-lg mr-4">
-              <Clock className="h-7 w-7 text-primary-600" />
-            </div>
-            Workforce Attendance
-          </h1>
-          <p className="text-slate-500 mt-1 font-medium">Manage clock-ins, breaks, and workforce efficiency</p>
-        </div>
-        
-        <div className="flex items-center space-x-3">
-          <button 
+      <PageHeader
+        title="Workforce Attendance"
+        subtitle="Manage clock-ins, breaks, and workforce efficiency"
+        icon={Clock}
+        actions={
+          <button
+            type="button"
             onClick={() => {
               if (viewMode === 'my') refetchMyAttendance();
               else refetchTeamAttendance();
               refetchStatus();
             }}
-            className="flex items-center space-x-2 px-4 py-2 text-sm font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-all shadow-sm"
+            className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-all shadow-sm w-full sm:w-auto"
           >
-            <RefreshCw className={`h-4 w-4 ${statusLoading || isLoading ? 'animate-spin' : ''}`} />
+            {(statusLoading || isLoading) ? (
+              <LoadingSpinner size="sm" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
             <span>Sync Data</span>
           </button>
-        </div>
-      </div>
+        }
+      />
 
       {/* Main Grid: Clocking and Stats */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -361,7 +469,7 @@ const Attendance = () => {
             
             <div className="p-8 flex-1 flex flex-col justify-center items-center text-center">
               {statusLoading ? (
-                <div className="py-12"><LoadingSpinner /></div>
+                <div className="py-12"><LoadingPage useSpinningText={false} /></div>
               ) : currentSession ? (
                 <div className="w-full space-y-8">
                   <div className="space-y-2">
@@ -385,17 +493,20 @@ const Attendance = () => {
                             <p className="text-xs text-amber-700 font-medium">Started {formatTime(getActiveBreak().startedAt)}</p>
                           </div>
                         </div>
+                        <div className="text-xl font-black text-amber-700 tracking-tight bg-amber-100/50 px-3 py-1 rounded-lg">
+                          {formatDuration(calculateActiveBreakDuration())}
+                        </div>
                       </div>
-                      <button
+                      <LoadingButton
                         onClick={handleEndBreak}
-                        disabled={endBreakLoading}
+                        isLoading={endBreakLoading}
                         className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-bold rounded-lg transition-all shadow-md shadow-amber-200/50 flex items-center justify-center space-x-2"
                       >
-                        {endBreakLoading ? <LoadingSpinner size="sm" /> : <>
+                        <>
                           <LogOut className="h-4 w-4" />
                           <span>Resume Work</span>
-                        </>}
-                      </button>
+                        </>
+                      </LoadingButton>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-3 animate-in fade-in duration-300">
@@ -425,16 +536,17 @@ const Attendance = () => {
                       placeholder="Shift handover notes (optional)..."
                       className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-all text-sm mb-4 resize-none h-24"
                     />
-                    <button
-                      onClick={handleClockOut}
-                      disabled={clockOutLoading}
+                    <LoadingButton
+                      onClick={handleOpenClockOut}
+                      isLoading={clockOutLoading}
+                      disabled={isUploadingImage}
                       className="w-full py-4 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition-all shadow-lg hover:shadow-slate-200 flex items-center justify-center space-x-3"
                     >
-                      {clockOutLoading ? <LoadingSpinner size="sm" /> : <>
+                      <>
                         <LogOut className="h-5 w-5" />
                         <span className="text-base uppercase tracking-widest">End Session</span>
-                      </>}
-                    </button>
+                      </>
+                    </LoadingButton>
                   </div>
                 </div>
               ) : (
@@ -454,16 +566,17 @@ const Attendance = () => {
                     className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-all text-sm resize-none h-24"
                   />
 
-                  <button
-                    onClick={handleClockIn}
-                    disabled={clockInLoading}
+                  <LoadingButton
+                    onClick={handleOpenClockIn}
+                    isLoading={clockInLoading}
+                    disabled={isUploadingImage}
                     className="w-full py-4 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl transition-all shadow-lg shadow-primary-200/50 flex items-center justify-center space-x-3"
                   >
-                    {clockInLoading ? <LoadingSpinner size="sm" /> : <>
+                    <>
                       <LogIn className="h-5 w-5" />
                       <span className="text-base uppercase tracking-widest">Clock In Now</span>
-                    </>}
-                  </button>
+                    </>
+                  </LoadingButton>
                 </div>
               )}
             </div>
@@ -540,27 +653,16 @@ const Attendance = () => {
                 )}
               </div>
 
-              <div className="flex items-center space-x-2">
-                <div className="relative">
-                  <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                  <input
-                    type="date"
-                    value={filters.startDate}
-                    onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
-                    className="pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 focus:ring-2 focus:ring-primary-500/20"
-                  />
-                </div>
-                <span className="text-slate-400 text-xs font-bold">to</span>
-                <div className="relative">
-                  <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                  <input
-                    type="date"
-                    value={filters.endDate}
-                    onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
-                    className="pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 focus:ring-2 focus:ring-primary-500/20"
-                  />
-                </div>
-              </div>
+              <DateFilter
+                startDate={filters.startDate}
+                endDate={filters.endDate}
+                onDateChange={(startDate, endDate) => setFilters({ ...filters, startDate, endDate })}
+                compact
+                showPresets={false}
+                showClear={false}
+                showLabel={false}
+                size="sm"
+              />
             </div>
 
             {viewMode === 'team' && (
@@ -593,9 +695,9 @@ const Attendance = () => {
               </div>
             )}
 
-            <div className="overflow-x-auto">
+            <div className="table-scroll">
               {isLoading ? (
-                <div className="py-20 text-center"><LoadingSpinner /></div>
+                <div className="py-20 text-center"><LoadingPage useSpinningText={false} /></div>
               ) : attendanceList.length === 0 ? (
                 <div className="py-20 text-center text-slate-400">
                   <Calendar className="h-10 w-10 mx-auto mb-4 opacity-20" />
@@ -635,6 +737,20 @@ const Attendance = () => {
                         <td className="px-6 py-4">
                           <div className="text-sm font-bold text-slate-900">{formatDate(record.clockInAt)}</div>
                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">System Ref: {record._id.slice(-8)}</div>
+                          {(record.imageIn || record.locationIn) && (
+                            <div className="flex items-center space-x-2 mt-2">
+                              {record.imageIn && (
+                                <a href={record.imageIn} target="_blank" rel="noopener noreferrer" className="text-emerald-500 hover:text-emerald-600 tooltip" title="View Check-In Photo">
+                                  <Camera className="h-3.5 w-3.5" />
+                                </a>
+                              )}
+                              {record.locationIn && (
+                                <a href={`https://maps.google.com/?q=${record.locationIn.latitude},${record.locationIn.longitude}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600 tooltip" title="View Check-In Location">
+                                  <MapPin className="h-3.5 w-3.5" />
+                                </a>
+                              )}
+                            </div>
+                          )}
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex items-center space-x-4">
@@ -648,6 +764,20 @@ const Attendance = () => {
                               <span className="text-sm font-bold text-slate-700">
                                 {record.clockOutAt ? formatTime(record.clockOutAt) : '---'}
                               </span>
+                              {(record.imageOut || record.locationOut) && (
+                                <div className="flex items-center space-x-2 mt-1">
+                                  {record.imageOut && (
+                                    <a href={record.imageOut} target="_blank" rel="noopener noreferrer" className="text-emerald-500 hover:text-emerald-600" title="View Check-Out Photo">
+                                      <Camera className="h-3 w-3" />
+                                    </a>
+                                  )}
+                                  {record.locationOut && (
+                                    <a href={`https://maps.google.com/?q=${record.locationOut.latitude},${record.locationOut.longitude}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600" title="View Check-Out Location">
+                                      <MapPin className="h-3 w-3" />
+                                    </a>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </td>
@@ -683,6 +813,134 @@ const Attendance = () => {
           </div>
         </div>
       </div>
+      
+      <ConfirmationDialog
+        isOpen={showClockInConfirm}
+        onClose={() => setShowClockInConfirm(false)}
+        onConfirm={handleClockIn}
+        title="Confirm Clock In"
+        message="Are you sure you want to clock in now?"
+        confirmText="Yes, Clock In"
+        cancelText="Cancel"
+        type="info"
+        isLoading={clockInLoading || isUploadingImage}
+        confirmButtonProps={{ disabled: !photoPreview || locationLoading || !!locationError }}
+      >
+        <div className="mt-4 space-y-4 text-left">
+          {/* Location Status */}
+          <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <MapPin className={`h-4 w-4 ${location ? 'text-emerald-500' : 'text-slate-400'}`} />
+              <span className="text-xs font-bold text-slate-700">Location</span>
+            </div>
+            <div className="text-xs">
+              {locationLoading ? (
+                <span className="text-amber-600"><LoadingInline message="Fetching..." /></span>
+              ) : locationError ? (
+                <span className="text-rose-500 font-medium">{locationError}</span>
+              ) : location ? (
+                <span className="text-emerald-600 font-bold">Captured</span>
+              ) : (
+                <span className="text-slate-500">Not available</span>
+              )}
+            </div>
+          </div>
+
+          {/* Photo Capture */}
+          <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center space-x-2">
+                <Camera className={`h-4 w-4 ${photoPreview ? 'text-emerald-500' : 'text-slate-400'}`} />
+                <span className="text-xs font-bold text-slate-700">Selfie Required</span>
+              </div>
+            </div>
+            
+            {!photoPreview ? (
+              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-300 border-dashed rounded-lg cursor-pointer bg-white hover:bg-slate-50 transition-colors">
+                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                  <Camera className="w-8 h-8 mb-2 text-slate-400" />
+                  <p className="text-xs font-bold text-slate-500">Tap to Take Photo</p>
+                </div>
+                <input type="file" accept="image/*" capture="user" className="hidden" onChange={handlePhotoChange} />
+              </label>
+            ) : (
+              <div className="relative w-full h-32 rounded-lg overflow-hidden border border-slate-200">
+                <img src={photoPreview} alt="Selfie preview" className="w-full h-full object-cover" />
+                <button 
+                  onClick={() => { setPhoto(null); setPhotoPreview(''); }}
+                  className="absolute top-2 right-2 bg-rose-500 text-white p-1.5 rounded-full hover:bg-rose-600 shadow-sm"
+                >
+                  <XCircle className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </ConfirmationDialog>
+
+      <ConfirmationDialog
+        isOpen={showClockOutConfirm}
+        onClose={() => setShowClockOutConfirm(false)}
+        onConfirm={handleClockOut}
+        title="Confirm End Session"
+        message="Are you sure you want to end your session now?"
+        confirmText="Yes, End Session"
+        cancelText="Cancel"
+        type="warning"
+        isLoading={clockOutLoading || isUploadingImage}
+        confirmButtonProps={{ disabled: !photoPreview || locationLoading || !!locationError }}
+      >
+        <div className="mt-4 space-y-4 text-left">
+          {/* Location Status */}
+          <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <MapPin className={`h-4 w-4 ${location ? 'text-emerald-500' : 'text-slate-400'}`} />
+              <span className="text-xs font-bold text-slate-700">Location</span>
+            </div>
+            <div className="text-xs">
+              {locationLoading ? (
+                <span className="text-amber-600"><LoadingInline message="Fetching..." /></span>
+              ) : locationError ? (
+                <span className="text-rose-500 font-medium">{locationError}</span>
+              ) : location ? (
+                <span className="text-emerald-600 font-bold">Captured</span>
+              ) : (
+                <span className="text-slate-500">Not available</span>
+              )}
+            </div>
+          </div>
+
+          {/* Photo Capture */}
+          <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center space-x-2">
+                <Camera className={`h-4 w-4 ${photoPreview ? 'text-emerald-500' : 'text-slate-400'}`} />
+                <span className="text-xs font-bold text-slate-700">Selfie Required</span>
+              </div>
+            </div>
+            
+            {!photoPreview ? (
+              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-300 border-dashed rounded-lg cursor-pointer bg-white hover:bg-slate-50 transition-colors">
+                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                  <Camera className="w-8 h-8 mb-2 text-slate-400" />
+                  <p className="text-xs font-bold text-slate-500">Tap to Take Photo</p>
+                </div>
+                <input type="file" accept="image/*" capture="user" className="hidden" onChange={handlePhotoChange} />
+              </label>
+            ) : (
+              <div className="relative w-full h-32 rounded-lg overflow-hidden border border-slate-200">
+                <img src={photoPreview} alt="Selfie preview" className="w-full h-full object-cover" />
+                <button 
+                  onClick={() => { setPhoto(null); setPhotoPreview(''); }}
+                  className="absolute top-2 right-2 bg-rose-500 text-white p-1.5 rounded-full hover:bg-rose-600 shadow-sm"
+                >
+                  <XCircle className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </ConfirmationDialog>
     </PageShell>
   );
 };

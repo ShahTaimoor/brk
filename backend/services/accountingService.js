@@ -1,6 +1,7 @@
 const { query, transaction } = require('../config/postgres');
 const { v4: uuidv4 } = require('uuid');
 const { invalidateByPrefix } = require('../utils/ttlCache');
+const { getSystemAccountCodes } = require('../config/basicAccounts');
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function isValidUuid(v) {
@@ -42,17 +43,7 @@ class AccountingService {
    * Get default account codes for system operations
    */
   static async getDefaultAccountCodes() {
-    return {
-      cash: '1000',
-      bank: '1001',
-      accountsReceivable: '1100',
-      inventory: '1200',
-      accountsPayable: '2000',
-      salesRevenue: '4000',
-      salesReturns: '4100', // Assuming 4100 for Sales Returns
-      costOfGoodsSold: '5000',
-      purchaseReturns: '5050' // Purchase Returns (contra-COGS)
-    };
+    return getSystemAccountCodes();
   }
 
   /**
@@ -345,8 +336,8 @@ class AccountingService {
       description: `${reason} (${Math.abs(delta)} units)`
     };
 
-    // Offset account: Retained Earnings (3100) for adjustments, or specific accounts based on reference
-    let offsetAccount = '3100';
+    // Offset account: Owner Capital (3100) for adjustments, or specific accounts based on reference
+    let offsetAccount = getSystemAccountCodes().ownerCapital;
     if (referenceType === 'sale') offsetAccount = '5000'; // COGS
     if (referenceType === 'purchase_invoice') offsetAccount = '2000'; // Accounts Payable (usually handled by recordPurchaseInvoice)
 
@@ -539,7 +530,7 @@ class AccountingService {
       const txnDate = transactionDate || new Date();
 
       if (amt > 0) {
-        // Positive: we owe supplier - Credit AP (2000), Debit Retained Earnings (3100)
+        // Positive: we owe supplier - Credit AP (2000), Debit Owner Capital (3100)
         await this.createTransaction(
           { accountCode: codes.accountsPayable, creditAmount: amt, description: 'Supplier opening balance (payable)' },
           { accountCode: '3100', debitAmount: amt, description: 'Supplier opening balance (equity offset)' },
@@ -554,7 +545,7 @@ class AccountingService {
           clientToUse
         );
       } else {
-        // Negative: advance to supplier - Debit AP (2000), Credit Retained Earnings (3100)
+        // Negative: advance to supplier - Debit AP (2000), Credit Owner Capital (3100)
         await this.createTransaction(
           { accountCode: codes.accountsPayable, debitAmount: Math.abs(amt), description: 'Supplier opening balance (advance)' },
           { accountCode: '3100', creditAmount: Math.abs(amt), description: 'Supplier opening balance (equity offset)' },
@@ -585,8 +576,8 @@ class AccountingService {
    * Reverses previous bank opening entries for the bank and posts current amount.
    *
    * Double-entry policy:
-   * - Positive opening: Dr Bank (1001), Cr Retained Earnings (3100)
-   * - Negative opening: Dr Retained Earnings (3100), Cr Bank (1001)
+   * - Positive opening: Dr Bank (1001), Cr Owner Capital (3100)
+   * - Negative opening: Dr Owner Capital (3100), Cr Bank (1001)
    *
    * @param {string} bankId - Bank UUID
    * @param {number} amount - Opening balance amount
@@ -681,8 +672,8 @@ class AccountingService {
    * so totals stay consistent with {@link getAccountBalance} (opening is not double-counted).
    *
    * Double-entry policy (same pattern as bank, account 1001):
-   * - Positive opening: Dr Cash (1000), Cr Retained Earnings (3100)
-   * - Negative opening: Dr Retained Earnings (3100), Cr Cash (1000)
+   * - Positive opening: Dr Cash (1000), Cr Owner Capital (3100)
+   * - Negative opening: Dr Owner Capital (3100), Cr Cash (1000)
    *
    * @param {number} amount - Opening cash amount
    * @param {Object} options - { createdBy, transactionDate, client }
@@ -762,8 +753,8 @@ class AccountingService {
    * Reverses previous customer opening entries for the customer and posts current amount.
    *
    * Double-entry policy:
-   * - Positive opening (customer owes us): Dr AR (1100), Cr Retained Earnings (3100)
-   * - Negative opening (we owe customer/advance): Dr Retained Earnings (3100), Cr AR (1100)
+   * - Positive opening (customer owes us): Dr AR (1100), Cr Owner Capital (3100)
+   * - Negative opening (we owe customer/advance): Dr Owner Capital (3100), Cr AR (1100)
    *
    * @param {string} customerId - Customer UUID
    * @param {number} amount - Opening balance amount
@@ -830,7 +821,7 @@ class AccountingService {
 
   /**
    * Post product opening stock to the ledger (new product registration with initial quantity).
-   * Dr Inventory (1200), Cr Retained Earnings (3100) — same equity offset pattern as customer/bank opening balances.
+   * Dr Inventory (1200), Cr Owner Capital (3100) — same equity offset pattern as customer/bank opening balances.
    *
    * @param {string} productId - Product UUID
    * @param {number} quantity - Opening stock quantity (units)
@@ -882,8 +873,8 @@ class AccountingService {
 
   /**
    * Post manual stock adjustment to the ledger.
-   * If qty delta > 0: Dr Inventory (1200), Cr Retained Earnings (3100)
-   * If qty delta < 0: Dr Retained Earnings (3100), Cr Inventory (1200)
+   * If qty delta > 0: Dr Inventory (1200), Cr Owner Capital (3100)
+   * If qty delta < 0: Dr Owner Capital (3100), Cr Inventory (1200)
    *
    * @param {string} productId - Product UUID
    * @param {number} deltaQty - Change in quantity (positive for increase, negative for decrease)
@@ -1029,7 +1020,7 @@ class AccountingService {
    * @param {string} [params.referenceNumber]
    */
   static async updateSaleLedgerEntries(params) {
-    const { saleId, total, transactionDate, customerId, referenceNumber } = params || {};
+    const { saleId, total, transactionDate, customerId, referenceNumber, notes } = params || {};
     const saleIdStr = String(saleId);
     const updates = [];
     const values = [saleIdStr];
@@ -1061,6 +1052,8 @@ class AccountingService {
 
     const totalAmount = parseFloat(total) || 0;
     const refNum = referenceNumber || saleIdStr;
+    const finalDescription = notes || `Sale: ${refNum}`;
+    const revenueDescription = notes || `Sale Revenue: ${refNum}`;
     await query(
       `UPDATE account_ledger
        SET debit_amount = CASE WHEN account_code = '1100' THEN $2 ELSE debit_amount END,
@@ -1074,7 +1067,7 @@ class AccountingService {
          AND reference_id::text = $1
          AND reversed_at IS NULL
          AND account_code IN ('1100', '4000')`,
-      [saleIdStr, totalAmount, `Sale: ${refNum}`, `Sale Revenue: ${refNum}`]
+      [saleIdStr, totalAmount, finalDescription, revenueDescription]
     );
   }
 
@@ -1131,7 +1124,8 @@ class AccountingService {
       supplierId,
       referenceNumber,
       paidAmount,
-      paymentMethod
+      paymentMethod,
+      notes
     } = params || {};
     const invoiceIdStr = String(invoiceId);
     const updates = [];
@@ -1164,6 +1158,8 @@ class AccountingService {
 
     const totalAmount = parseFloat(total) || 0;
     const refNum = referenceNumber || invoiceIdStr;
+    const finalDescription = notes || `Purchase Invoice: ${refNum}`;
+    const creditDescription = notes || `Purchase Invoice on Credit: ${refNum}`;
     await query(
       `UPDATE account_ledger
        SET debit_amount = CASE WHEN account_code = '1200' THEN $2 ELSE debit_amount END,
@@ -1177,7 +1173,7 @@ class AccountingService {
          AND reference_id::text = $1
          AND reversed_at IS NULL
          AND account_code IN ('1200', '2000')`,
-      [invoiceIdStr, totalAmount, `Purchase Invoice: ${refNum}`, `Purchase Invoice on Credit: ${refNum}`]
+      [invoiceIdStr, totalAmount, finalDescription, creditDescription]
     );
 
     if (paidAmount !== undefined && paidAmount !== null) {
@@ -1458,7 +1454,7 @@ class AccountingService {
 
   /**
    * Investor payout: reduce equity or liability (debit), reduce cash or bank (credit).
-   * Default debit is Retained Earnings (3100); optional 2350 Due to Investors if you accrue payables on the ledger.
+   * Default debit is Owner Capital (3100); optional 2350 Due to Investors if you accrue payables on the ledger.
    * @param {object} ctx
    * @param {string} ctx.investorPayoutId - UUID of investor_payouts row (ledger reference_id)
    * @param {string} ctx.investorId
@@ -1507,7 +1503,7 @@ class AccountingService {
     const accType = typeRes.rows[0].account_type;
     if (accType !== 'equity' && accType !== 'liability') {
       throw new Error(
-        `Investor payout debit account must be equity or liability (e.g. 3100 Retained Earnings or 2350 Due to Investors), not ${accType}`
+        `Investor payout debit account must be equity or liability (e.g. 3100 Owner Capital or 2350 Due to Investors), not ${accType}`
       );
     }
 
@@ -1706,13 +1702,13 @@ class AccountingService {
             accountCode: '1100', // AR
             debitAmount: total,
             creditAmount: 0,
-            description: `Sale: ${refNum}`
+            description: sale.notes || `Sale: ${refNum}`
           },
           {
             accountCode: '4000', // Sales Revenue
             debitAmount: 0,
             creditAmount: total,
-            description: `Sale Revenue: ${refNum}`
+            description: sale.notes || `Sale Revenue: ${refNum}`
           },
           {
             referenceType: 'sale',
@@ -1734,13 +1730,13 @@ class AccountingService {
             accountCode: '5000', // COGS
             debitAmount: totalCOGS,
             creditAmount: 0,
-            description: `COGS for Sale: ${refNum}`
+            description: sale.notes || `COGS for Sale: ${refNum}`
           },
           {
             accountCode: '1200', // Inventory
             debitAmount: 0,
             creditAmount: totalCOGS,
-            description: `Inventory Reduction: ${refNum}`
+            description: sale.notes || `Inventory Reduction: ${refNum}`
           },
           {
             referenceType: 'sale',
@@ -1844,10 +1840,19 @@ class AccountingService {
    * Posts the delta to account_ledger so balance reflects the change.
    * - Delta > 0: Dr AP (2000), Cr Cash/Bank (payment made)
    * - Delta < 0: Dr Cash/Bank, Cr AP (reversal)
-   * @param {Object} params - { invoiceId, invoiceNumber, supplierId, oldAmountPaid, newAmountPaid, paymentMethod, createdBy }
+   * @param {Object} params - { invoiceId, invoiceNumber, supplierId, oldAmountPaid, newAmountPaid, paymentMethod, transactionDate, createdBy }
    */
   static async recordPurchasePaymentAdjustment(params) {
-    const { invoiceId, invoiceNumber, supplierId, oldAmountPaid, newAmountPaid, paymentMethod = 'cash', createdBy } = params;
+    const {
+      invoiceId,
+      invoiceNumber,
+      supplierId,
+      oldAmountPaid,
+      newAmountPaid,
+      paymentMethod = 'cash',
+      transactionDate,
+      createdBy
+    } = params;
     const oldAmt = parseFloat(oldAmountPaid) || 0;
     const newAmt = parseFloat(newAmountPaid) || 0;
     const delta = newAmt - oldAmt;
@@ -1857,12 +1862,28 @@ class AccountingService {
     const creditAccount = (paymentMethod === 'bank' || paymentMethod === 'bank_transfer') ? '1001' : '1000'; // Cash or Bank
     const debitAccount = '2000'; // AP
 
+    let txnDate = new Date();
+    if (transactionDate != null && transactionDate !== '') {
+      const d = new Date(transactionDate);
+      if (!Number.isNaN(d.getTime())) txnDate = d;
+    }
+
+    const metaBase = {
+      referenceType: 'purchase_invoice_payment',
+      referenceId: invoiceId,
+      referenceNumber: refNum,
+      supplierId: supplierId || null,
+      transactionDate: txnDate,
+      currency: 'PKR',
+      createdBy
+    };
+
     if (delta > 0) {
       // Payment made: Dr AP, Cr Cash/Bank
       return await this.createTransaction(
         { accountCode: debitAccount, debitAmount: delta, creditAmount: 0, description: `Purchase payment (edit): ${refNum}` },
         { accountCode: creditAccount, debitAmount: 0, creditAmount: delta, description: `Payment for purchase: ${refNum}` },
-        { referenceType: 'purchase_invoice_payment', referenceId: invoiceId, referenceNumber: refNum, supplierId: supplierId || null, currency: 'PKR', createdBy }
+        metaBase
       );
     } else {
       // Reversal: Dr Cash/Bank, Cr AP
@@ -1870,7 +1891,7 @@ class AccountingService {
       return await this.createTransaction(
         { accountCode: creditAccount, debitAmount: absDelta, creditAmount: 0, description: `Purchase payment reversal (edit): ${refNum}` },
         { accountCode: debitAccount, debitAmount: 0, creditAmount: absDelta, description: `Reversal for purchase: ${refNum}` },
-        { referenceType: 'purchase_invoice_payment', referenceId: invoiceId, referenceNumber: refNum, supplierId: supplierId || null, currency: 'PKR', createdBy }
+        metaBase
       );
     }
   }
@@ -1890,13 +1911,13 @@ class AccountingService {
           accountCode: '1200', // Inventory
           debitAmount: total,
           creditAmount: 0,
-          description: `Purchase: ${purchase.purchase_order_number || purchase.purchaseOrderNumber || purchase.id}`
+          description: purchase.notes || `Purchase: ${purchase.purchase_order_number || purchase.purchaseOrderNumber || purchase.id}`
         },
         {
           accountCode: '2000', // AP
           debitAmount: 0,
           creditAmount: total,
-          description: `Purchase on Credit: ${purchase.purchase_order_number || purchase.purchaseOrderNumber || purchase.id}`
+          description: purchase.notes || `Purchase on Credit: ${purchase.purchase_order_number || purchase.purchaseOrderNumber || purchase.id}`
         },
         {
           referenceType: 'purchase',
@@ -1936,13 +1957,13 @@ class AccountingService {
           accountCode: '1200', // Inventory
           debitAmount: total,
           creditAmount: 0,
-          description: `Purchase Invoice: ${invoiceNumber || purchaseInvoice.id}`
+          description: purchaseInvoice.notes || `Purchase Invoice: ${invoiceNumber || purchaseInvoice.id}`
         },
         {
           accountCode: '2000', // Accounts Payable
           debitAmount: 0,
           creditAmount: total,
-          description: `Purchase Invoice on Credit: ${invoiceNumber || purchaseInvoice.id}`
+          description: purchaseInvoice.notes || `Purchase Invoice on Credit: ${invoiceNumber || purchaseInvoice.id}`
         },
         {
           referenceType: 'purchase_invoice',
@@ -1964,13 +1985,13 @@ class AccountingService {
             accountCode: '2000', // Accounts Payable
             debitAmount: paidAmount,
             creditAmount: 0,
-            description: `Payment for Invoice: ${invoiceNumber || purchaseInvoice.id}`
+            description: purchaseInvoice.notes || `Payment for Invoice: ${invoiceNumber || purchaseInvoice.id}`
           },
           {
             accountCode: paymentAccountCode, // Cash or Bank
             debitAmount: 0,
             creditAmount: paidAmount,
-            description: `Payment for Purchase Invoice: ${invoiceNumber || purchaseInvoice.id}`
+            description: purchaseInvoice.notes || `Payment for Purchase Invoice: ${invoiceNumber || purchaseInvoice.id}`
           },
           {
             referenceType: 'purchase_invoice_payment',

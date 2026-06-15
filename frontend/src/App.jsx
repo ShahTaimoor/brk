@@ -3,13 +3,13 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { ErrorProvider } from './contexts/ErrorContext';
 import { TabProvider } from './contexts/TabContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
-import { Layout } from './components/Layout';
 import { MultiTabLayout } from './components/MultiTabLayout';
 import ErrorBoundary from './components/ErrorBoundary';
 import NetworkStatus from './components/NetworkStatus';
 import OfflineIndicator from './components/OfflineIndicator';
 import { LoadingPage } from './components/LoadingSpinner';
 import { getRouteAccess } from './config/routeAccess';
+import { DailyCashFeatureRoute } from './components/DailyCashFeatureRoute';
 import SyncManager from './services/SyncManager';
 
 // Critical components - load immediately (small, frequently used)
@@ -37,8 +37,6 @@ const BalanceSheetStatement = lazy(() => import('./pages/BalanceSheetStatement')
 const SaleReturns = lazy(() => import('./pages/SaleReturns'));
 const PurchaseReturns = lazy(() => import('./pages/PurchaseReturns'));
 const Discounts = lazy(() => import('./pages/Discounts'));
-const SalesPerformanceReports = lazy(() => import('./pages/SalesPerformanceReports'));
-const InventoryReports = lazy(() => import('./pages/InventoryReports'));
 const CashReceipts = lazy(() => import('./pages/CashReceipts'));
 const CashReceiving = lazy(() => import('./pages/CashReceiving'));
 const CashPayments = lazy(() => import('./pages/CashPayments'));
@@ -50,6 +48,7 @@ const BankPayments = lazy(() => import('./pages/BankPayments'));
 const Reports = lazy(() => import('./pages/Reports').then(m => ({ default: m.Reports })));
 const Settings2 = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings2 })));
 const StockMovements = lazy(() => import('./pages/StockMovements').then(m => ({ default: m.StockMovements })));
+const StockTransfers = lazy(() => import('./pages/StockTransfers'));
 const StockLedger = lazy(() => import('./pages/StockLedger'));
 const ChartOfAccounts = lazy(() => import('./pages/ChartOfAccounts'));
 const AccountLedgerSummary = lazy(() => import('./pages/AccountLedgerSummary'));
@@ -66,12 +65,13 @@ const ProductVariants = lazy(() => import('./pages/ProductVariants'));
 const ProductTransformations = lazy(() => import('./pages/ProductTransformations'));
 const CCTVAccess = lazy(() => import('./pages/CCTVAccess'));
 const MarketPrices = lazy(() => import('./pages/MarketPrices'));
+const DailyCashClosing = lazy(() => import('./pages/DailyCashClosing'));
 
 const withRouteGuard = (path, element) => {
   const access = getRouteAccess(path);
   if (!access) return element;
   return (
-    <ProtectedRoute permission={access.permission} permissionAny={access.permissionAny || []}>
+    <ProtectedRoute permission={access.permission} permissionAny={access.permissionAny || []} role={access.role}>
       {element}
     </ProtectedRoute>
   );
@@ -121,6 +121,7 @@ function App() {
                       <Route path="/anomaly-detection" element={withRouteGuard('/anomaly-detection', <Suspense fallback={<LoadingPage />}><AnomalyDetection /></Suspense>)} />
                       <Route path="/warehouses" element={withRouteGuard('/warehouses', <Suspense fallback={<LoadingPage />}><Warehouses /></Suspense>)} />
                       <Route path="/stock-movements" element={withRouteGuard('/stock-movements', <Suspense fallback={<LoadingPage />}><StockMovements /></Suspense>)} />
+                      <Route path="/stock-transfers" element={withRouteGuard('/stock-transfers', <Suspense fallback={<LoadingPage />}><StockTransfers /></Suspense>)} />
                       <Route path="/stock-ledger" element={withRouteGuard('/stock-ledger', <Suspense fallback={<LoadingPage />}><StockLedger /></Suspense>)} />
 
                       <Route path="/pl-statements" element={withRouteGuard('/pl-statements', <Suspense fallback={<LoadingPage />}><PLStatements /></Suspense>)} />
@@ -129,14 +130,16 @@ function App() {
                       <Route path="/purchase-returns" element={withRouteGuard('/purchase-returns', <Suspense fallback={<LoadingPage />}><PurchaseReturns /></Suspense>)} />
                       <Route path="/purchase-by-supplier" element={<Navigate to="/reports" replace />} />
                       <Route path="/discounts" element={withRouteGuard('/discounts', <Suspense fallback={<LoadingPage />}><Discounts /></Suspense>)} />
-                      <Route path="/sales-performance" element={withRouteGuard('/sales-performance', <Suspense fallback={<LoadingPage />}><SalesPerformanceReports /></Suspense>)} />
-                      <Route path="/inventory-reports" element={withRouteGuard('/inventory-reports', <Suspense fallback={<LoadingPage />}><InventoryReports /></Suspense>)} />
+                      <Route path="/sales-performance" element={<Navigate to="/reports" replace />} />
+                      <Route path="/inventory-reports" element={<Navigate to="/reports" replace />} />
                       <Route path="/cash-receipts" element={withRouteGuard('/cash-receipts', <Suspense fallback={<LoadingPage />}><CashReceipts /></Suspense>)} />
                       <Route path="/cash-receiving" element={withRouteGuard('/cash-receiving', <Suspense fallback={<LoadingPage />}><CashReceiving /></Suspense>)} />
                       <Route path="/cash-payments" element={withRouteGuard('/cash-payments', <Suspense fallback={<LoadingPage />}><CashPayments /></Suspense>)} />
                       <Route path="/cities" element={withRouteGuard('/cities', <Suspense fallback={<LoadingPage />}><Cities /></Suspense>)} />
                       <Route path="/banks" element={withRouteGuard('/banks', <Suspense fallback={<LoadingPage />}><Banks /></Suspense>)} />
                       <Route path="/expenses" element={withRouteGuard('/expenses', <Suspense fallback={<LoadingPage />}><Expenses /></Suspense>)} />
+                      <Route path="/daily-cash" element={withRouteGuard('/daily-cash', <DailyCashFeatureRoute><Suspense fallback={<LoadingPage />}><DailyCashClosing /></Suspense></DailyCashFeatureRoute>)} />
+                      <Route path="/till" element={withRouteGuard('/daily-cash', <DailyCashFeatureRoute><Suspense fallback={<LoadingPage />}><DailyCashClosing /></Suspense></DailyCashFeatureRoute>)} />
                       <Route path="/bank-receipts" element={withRouteGuard('/bank-receipts', <Suspense fallback={<LoadingPage />}><BankReceipts /></Suspense>)} />
                       <Route path="/bank-payments" element={withRouteGuard('/bank-payments', <Suspense fallback={<LoadingPage />}><BankPayments /></Suspense>)} />
                       <Route path="/journal-vouchers" element={withRouteGuard('/journal-vouchers', <Suspense fallback={<LoadingPage />}><JournalVouchers /></Suspense>)} />

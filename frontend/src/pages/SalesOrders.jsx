@@ -33,7 +33,7 @@ import {
 } from 'lucide-react';
 import { showSuccessToast, showErrorToast, handleApiError } from '../utils/errorHandler';
 import { formatDate, formatCurrency } from '../utils/formatters';
-import { LoadingButton } from '../components/LoadingSpinner';
+import { LoadingButton, LoadingSpinner, LoadingInline } from '../components/LoadingSpinner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -94,7 +94,12 @@ import {
   LineItemPriceStatusBadge,
 } from '../components/order/CartLineItemAtoms';
 import { CostPriceToggleButton, ProfitToggleButton } from '../components/order/CostPriceToggleButton';
-import { formatPartyAddress as formatAddressForDisplay } from '../utils/partyDisplay';
+import {
+  formatPartyAddress as formatAddressForDisplay,
+  getCustomerDisplayName,
+  getProductDisplayName,
+  getPartyDisplayName,
+} from '../utils/partyDisplay';
 import { computeSalesCheckoutPricing } from '../utils/orderPricing';
 import { PriceTypeSelector } from '../components/order/PriceTypeSelector';
 import {
@@ -121,6 +126,12 @@ import { useResponsive } from '../components/ResponsiveContainer';
 import { getInvoicePdfPayload } from '../utils/invoicePdfUtils';
 import { DeleteConfirmationDialog } from '../components/ConfirmationDialog';
 import { useDeleteConfirmation } from '../hooks/useConfirmation';
+import { PageLayout } from '../components/layout/PageLayout';
+import {
+  getProductCostPrice,
+  getProductDisplayCostPrice,
+  getEffectiveCostForLossCheck,
+} from '../utils/productCostUtils';
 
 
 // Helper function to safely render values
@@ -128,10 +139,48 @@ const safeRender = (value) => {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string' || typeof value === 'number') return value;
   if (typeof value === 'object') {
-    return value.businessName || value.business_name || value.name || value.title || value.fullName || value.companyName || value.displayName || JSON.stringify(value);
+    return getPartyDisplayName(value, JSON.stringify(value));
   }
   return String(value);
 };
+
+function getSoItemProductData(item) {
+  if (item?.productData) return item.productData;
+  if (item?.product && typeof item.product === 'object') return item.product;
+  return null;
+}
+
+function getSoItemProductIdFromItem(item) {
+  const raw = typeof item?.product === 'string'
+    ? item.product
+    : (item?.product?._id ?? item?.product?.id);
+  return raw != null ? String(raw) : '';
+}
+
+function getSoLineLastPurchasePrice(item, lastPurchasePrices) {
+  const lineId = getSoItemProductIdFromItem(item);
+  if (lineId && lastPurchasePrices[lineId] !== undefined) {
+    const value = Number(lastPurchasePrices[lineId]);
+    if (Number.isFinite(value)) return value;
+  }
+  const productData = getSoItemProductData(item);
+  if (productData?.isVariant) {
+    const baseId = productData.baseProductId ?? productData.baseProduct?._id ?? productData.baseProduct?.id;
+    const baseKey = baseId != null ? String(baseId) : '';
+    if (baseKey && lastPurchasePrices[baseKey] !== undefined) {
+      const value = Number(lastPurchasePrices[baseKey]);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return null;
+}
+
+function getSoLineEffectiveCost(item, lastPurchasePrices) {
+  return getEffectiveCostForLossCheck(
+    getSoItemProductData(item),
+    getSoLineLastPurchasePrice(item, lastPurchasePrices)
+  );
+}
 
 // Address formatting moved to utils/partyDisplay.js (imported at top)
 
@@ -148,7 +197,7 @@ const SalesOrders = ({ tabId }) => {
   const resolvedCompanyName = companySettings.companyName || 'Company Name';
   const itemWiseConfirmationEnabled = companySettings.orderSettings?.salesOrderItemWiseConfirmation !== false;
   const showRemainingStockAfterSaleEnabled = companySettings.orderSettings?.showRemainingStockAfterSale !== false;
-  const dualUnitShowBoxInputEnabled = companySettings.orderSettings?.dualUnitShowBoxInput !== false;
+  const dualUnitShowBoxInputEnabled = companySettings.orderSettings?.dualUnitShowBoxInput === true;
   const dualUnitShowPiecesInputEnabled = companySettings.orderSettings?.dualUnitShowPiecesInput !== false;
   const allowSaleWithoutProductEnabled = companySettings.orderSettings?.allowSaleWithoutProduct === true;
   const allowManualCostPriceEnabled = companySettings.orderSettings?.allowManualCostPrice === true;
@@ -226,7 +275,7 @@ const SalesOrders = ({ tabId }) => {
       const time = String(now.getTime()).slice(-4); // Last 4 digits of timestamp
 
       const customerInitials = customer
-        ? (customer.businessName || customer.business_name || customer.name || customer.displayName || '')
+        ? getCustomerDisplayName(customer, '')
           .split(' ')
           .map((word) => word.charAt(0).toUpperCase())
           .join('')
@@ -361,51 +410,18 @@ const SalesOrders = ({ tabId }) => {
   const totalProfit = useMemo(() => {
     if (!Array.isArray(formData.items) || formData.items.length === 0) return 0;
 
-    const getProductIdFromItem = (item) => {
-      if (!item) return null;
-      if (item.product?._id) return item.product._id;
-      if (typeof item.product === 'string') return item.product;
-      if (item.productData?._id) return item.productData._id;
-      return null;
-    };
-
-    const getProductData = (item) => {
-      if (!item) return null;
-      if (item.productData) return item.productData;
-      if (item.product && typeof item.product === 'object') return item.product;
-      return null;
-    };
-
     return formData.items.reduce((sum, item) => {
       const quantity = Number(item.quantity) || 0;
       const salePrice = Number(item.unitPrice) || 0;
-      const productId = getProductIdFromItem(item);
-      const productData = getProductData(item);
+      const productData = getSoItemProductData(item);
 
-      const lastCost =
-        productId && lastPurchasePrices[productId] !== undefined
-          ? Number(lastPurchasePrices[productId])
-          : null;
-
-      const fallbackCostCandidates = [
-        lastCost,
-        Number(productData?.pricing?.cost),
-        Number(productData?.pricing?.purchasePrice),
-        Number(productData?.pricing?.wholesaleCost),
-        Number(productData?.costPrice),
-        Number(productData?.purchasePrice),
-      ];
-
-      const cost = fallbackCostCandidates.find(
-        (value) => value !== null && value !== undefined && Number.isFinite(value)
-      ) || 0;
-
-      const profitPerUnit = salePrice - cost;
+      const catalogCost = getProductCostPrice(productData);
+      const profitPerUnit = salePrice - (Number.isFinite(catalogCost) ? catalogCost : 0);
       const lineProfit = profitPerUnit * quantity;
 
       return sum + (Number.isFinite(lineProfit) ? lineProfit : 0);
     }, 0);
-  }, [formData.items, lastPurchasePrices]);
+  }, [formData.items]);
 
   // Modal-specific product selection state
   const [modalProductSearchTerm, setModalProductSearchTerm] = useState('');
@@ -449,7 +465,7 @@ const SalesOrders = ({ tabId }) => {
     if (!updateTabTitle || !tabIdToUpdate) return;
 
     const newTitle = selectedCustomer
-      ? `SO - ${selectedCustomer.businessName || selectedCustomer.business_name || selectedCustomer.displayName || selectedCustomer.name || 'Unknown'}`
+      ? `SO - ${getCustomerDisplayName(selectedCustomer, 'Unknown')}`
       : 'SO';
 
     updateTabTitle(tabIdToUpdate, newTitle);
@@ -659,7 +675,7 @@ const SalesOrders = ({ tabId }) => {
       customer: customerId,
       orderNumber: autoGenerateOrderNumber ? generateOrderNumber(customerObj) : prev.orderNumber
     }));
-    setCustomerSearchTerm(customerObj?.businessName || customerObj?.business_name || customerObj?.displayName || customerObj?.name || '');
+    setCustomerSearchTerm(getCustomerDisplayName(customerObj, ''));
 
     // Auto-set price type based on customer business type. Skip when
     // editing an existing order so we don't overwrite the price type
@@ -711,10 +727,7 @@ const SalesOrders = ({ tabId }) => {
     setIsAddingProduct(true);
 
     // Show selected product/variant name in search field
-    const displayName = product.isVariant
-      ? (product.displayName || product.variantName || product.name)
-      : product.name;
-    setProductSearchTerm(displayName);
+    setProductSearchTerm(getProductDisplayName(product, ''));
 
     // Fetch last purchase price (always, for loss alerts)
     // For variants, use the base product ID to get purchase price
@@ -790,8 +803,7 @@ const SalesOrders = ({ tabId }) => {
     setModalSelectedProduct(product);
     setCustomRate(calculatePrice(product, priceType));
     setQuantity(1);
-    const displayName = product.isVariant ? (product.displayName || product.variantName || product.name) : product.name;
-    setModalProductSearchTerm(displayName);
+    setModalProductSearchTerm(getProductDisplayName(product, ''));
   };
 
   const handleProductKeyDown = (e) => {
@@ -820,10 +832,7 @@ const SalesOrders = ({ tabId }) => {
     const isLowStock = inventory.currentStock <= (inventory.reorderPoint || inventory.minStock || 0);
     const isOutOfStock = inventory.currentStock === 0;
 
-    // Get display name - use variant display name if it's a variant
-    const displayName = product.isVariant
-      ? (product.displayName || product.variantName || product.name)
-      : product.name;
+    const displayName = getProductDisplayName(product, 'Product');
 
     // Get pricing based on selected price type
     const pricing = product.pricing || {};
@@ -882,11 +891,12 @@ const SalesOrders = ({ tabId }) => {
       const unitPrice = parseFloat(customRate) || calculatedRate;
 
       // Check if sale price is less than cost price (always check, regardless of showCostPrice)
-      if (lastPurchasePrice !== null && unitPrice < lastPurchasePrice) {
-        const loss = lastPurchasePrice - unitPrice;
-        const lossPercent = ((loss / lastPurchasePrice) * 100).toFixed(1);
+      const costPrice = getEffectiveCostForLossCheck(selectedProduct, lastPurchasePrice);
+      if (costPrice != null && unitPrice < costPrice) {
+        const loss = costPrice - unitPrice;
+        const lossPercent = ((loss / costPrice) * 100).toFixed(1);
         const shouldProceed = window.confirm(
-          `⚠️ WARNING: Sale price (${unitPrice}) is below cost price (${Math.round(lastPurchasePrice)}).\n\n` +
+          `⚠️ WARNING: Sale price (${unitPrice}) is below cost price (${Math.round(costPrice)}).\n\n` +
           `Loss per unit: ${Math.round(loss)} (${lossPercent}%)\n` +
           `Total loss: ${Math.round(loss * quantity)}\n\n` +
           `Do you want to proceed?`
@@ -1001,12 +1011,9 @@ const SalesOrders = ({ tabId }) => {
 
     if (existingIndex >= 0) {
       const existingItem = soItemsRef.current[existingIndex];
-      const displayName = product.isVariant
-        ? (product.displayName || product.variantName || product.name)
-        : product.name;
       setSoDuplicateMerge({
         productId,
-        displayName: displayName || 'Product',
+        displayName: getProductDisplayName(product, 'Product'),
         currentQuantity: Number(existingItem.quantity) || 0,
         addQuantity: qty,
         source: 'sharedSearch',
@@ -1019,7 +1026,7 @@ const SalesOrders = ({ tabId }) => {
           ...(payload.pieces !== undefined ? { pieces: payload.pieces } : {}),
         },
       });
-      return;
+      return 'duplicate';
     }
 
     let highlightLineIndex = null;
@@ -1155,9 +1162,10 @@ const SalesOrders = ({ tabId }) => {
         lastPrice = null;
       }
     }
-    if (lastPrice !== null && unitPrice < lastPrice) {
+    const effectiveCost = getEffectiveCostForLossCheck(modalSelectedProduct, lastPrice);
+    if (effectiveCost != null && unitPrice < effectiveCost) {
       const ok = window.confirm(
-        `⚠️ WARNING: Sale price (${unitPrice}) is below cost price (${Math.round(lastPrice)}).\n\nDo you want to proceed?`
+        `⚠️ WARNING: Sale price (${unitPrice}) is below cost price (${Math.round(effectiveCost)}).\n\nDo you want to proceed?`
       );
       if (!ok) return;
     }
@@ -1682,7 +1690,7 @@ const SalesOrders = ({ tabId }) => {
     // Set the selected customer
     if (order.customer) {
       setSelectedCustomer(order.customer);
-      setCustomerSearchTerm(order.customer.businessName || order.customer.name || '');
+      setCustomerSearchTerm(getCustomerDisplayName(order.customer, ''));
     } else {
       setSelectedCustomer(null);
       setCustomerSearchTerm('');
@@ -2016,7 +2024,7 @@ const SalesOrders = ({ tabId }) => {
           sno: i + 1,
           imageUrl: order.items?.[0]?.product?.imageUrl ?? order.items?.[0]?.productData?.imageUrl ?? null,
           orderNumber: order?.soNumber ?? order?.so_number ?? order?.orderNumber ?? order?.invoiceNumber ?? '—',
-          customerName: order?.customer?.businessName ?? order?.customer?.business_name ?? order?.customer?.displayName ?? order?.customer?.name ?? 'Walk-in',
+          customerName: getCustomerDisplayName(order?.customer, 'Walk-in'),
           date: formatDate(order?.orderDate ?? order?.order_date ?? order?.createdAt ?? order?.created_at),
           orderType: (order?.orderType || '—').toUpperCase(),
           status: (order?.status || '—').toUpperCase(),
@@ -2046,7 +2054,7 @@ const SalesOrders = ({ tabId }) => {
   } = calculateTotals();
 
   return (
-    <div className="space-y-4 lg:space-y-6 w-full max-w-full overflow-x-hidden px-2 sm:px-0">
+    <PageLayout className="w-full max-w-full overflow-x-hidden">
       {/* Modern Header Section */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3">
         <div className="flex flex-col lg:flex-row lg:items-center gap-3 lg:gap-4">
@@ -2234,10 +2242,16 @@ const SalesOrders = ({ tabId }) => {
                 }
               >
                 {formData.items.map((item, index) => {
-                  const product = item.productData || item.product; // Use stored product data or fallback to product
+                  const product = getSoItemProductData(item);
                   const totalPrice = item.unitPrice * item.quantity;
                   const isLowStock = product?.inventory?.currentStock <= (product?.inventory?.reorderPoint || 0);
                   const serialHighlight = highlightedSoLineIndex === index;
+                  const lineDisplayCost = getProductDisplayCostPrice(product);
+                  const lineEffectiveCost = getSoLineEffectiveCost(item, lastPurchasePrices);
+                  const isBelowCost =
+                    canViewCostPrice &&
+                    lineEffectiveCost != null &&
+                    item.unitPrice < lineEffectiveCost;
 
                   return (
                     <div
@@ -2279,12 +2293,11 @@ const SalesOrders = ({ tabId }) => {
                           <div className="flex flex-col min-w-0 w-full">
                             <span className="font-medium text-sm truncate min-w-0">
                               {product?.isVariant
-                                ? (safeRender(product?.displayName || product?.variantName || product?.name) || 'Unknown Variant')
+                                ? getProductDisplayName(product, 'Unknown Variant')
                                 : (safeRender(product?.name) || 'Unknown Product')}
                               {isLowStock && <span className="text-yellow-600 text-xs ml-2">⚠️ Low Stock</span>}
-                              {lastPurchasePrices[item.product?.toString()] !== undefined &&
-                                item.unitPrice < lastPurchasePrices[item.product?.toString()] && (
-                                  <span className="text-xs ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold" title={`Sale price below cost! Loss: ${Math.round(lastPurchasePrices[item.product?.toString()] - item.unitPrice)} per unit`}>
+                              {isBelowCost && (
+                                  <span className="text-xs ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold" title={`Sale price below cost! Loss: ${Math.round(lineEffectiveCost - item.unitPrice)} per unit`}>
                                     ⚠️ Below Cost
                                   </span>
                                 )}
@@ -2377,7 +2390,7 @@ const SalesOrders = ({ tabId }) => {
                             max={undefined}
                             stockPiecesForRemaining={product?.inventory?.currentStock ?? 0}
 
-                            showBoxInput={!dualUnitShowBoxInputEnabled && !hasDualUnit(product)}
+                            showBoxInput={dualUnitShowBoxInputEnabled && !hasDualUnit(product)}
                             showPiecesInput={dualUnitShowPiecesInputEnabled}
                             showPiecesUnitLabel={false}
                             inputClassName="input text-center h-8"
@@ -2388,12 +2401,8 @@ const SalesOrders = ({ tabId }) => {
                         {/* Purchase Price (Cost) - 1 column (conditional) - Between Quantity and Rate */}
                         {showCostPrice && canViewCostPrice && (
                           <div className="min-w-0">
-                            <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-8 flex items-center justify-center" title={lastPurchasePrices[item.product?.toString()] !== undefined ? 'Last Purchase Price' : 'Product Cost (from pricing)'}>
-                              {lastPurchasePrices[item.product?.toString()] !== undefined
-                                ? `${Math.round(lastPurchasePrices[item.product?.toString()])}`
-                                : (product?.pricing?.cost != null && product?.pricing?.cost !== '')
-                                  ? `${Math.round(Number(product.pricing.cost))}`
-                                  : 'N/A'}
+                            <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-8 flex items-center justify-center" title="Cost Price">
+                              {lineDisplayCost ?? 'N/A'}
                             </span>
                           </div>
                         )}
@@ -2406,10 +2415,10 @@ const SalesOrders = ({ tabId }) => {
                             value={item.unitPrice}
                             onChange={(e) => {
                               const newPrice = parseFloat(e.target.value) || 0;
-                              const costPrice = lastPurchasePrices[item.product?.toString()];
+                              const costPrice = getSoLineEffectiveCost(item, lastPurchasePrices);
 
                               // Check if new price is below cost (always check, regardless of showCostPrice)
-                              if (costPrice !== undefined && newPrice < costPrice) {
+                              if (costPrice != null && newPrice < costPrice) {
                                 const loss = costPrice - newPrice;
                                 const lossPercent = ((loss / costPrice) * 100).toFixed(1);
                                 const shouldProceed = window.confirm(
@@ -2431,15 +2440,13 @@ const SalesOrders = ({ tabId }) => {
                               }));
                             }}
                             onFocus={(e) => e.target.select()}
-                            className={`input text-center h-8 ${lastPurchasePrices[item.product?.toString()] !== undefined &&
-                              item.unitPrice < lastPurchasePrices[item.product?.toString()]
+                            className={`input text-center h-8 ${isBelowCost
                               ? 'border-red-500 bg-red-50'
                               : ''
                               }`}
                             title={
-                              lastPurchasePrices[item.product?.toString()] !== undefined &&
-                                item.unitPrice < lastPurchasePrices[item.product?.toString()]
-                                ? `⚠️ WARNING: Sale price (${Math.round(item.unitPrice)}) is below cost price (${Math.round(lastPurchasePrices[item.product?.toString()])})`
+                              isBelowCost
+                                ? `⚠️ WARNING: Sale price (${Math.round(item.unitPrice)}) is below cost price (${Math.round(lineEffectiveCost)})`
                                 : ''
                             }
                             min="0"
@@ -2486,8 +2493,7 @@ const SalesOrders = ({ tabId }) => {
                               </h5>
                               {isLowStock && <span className="text-yellow-600 text-xs text-nowrap">⚠️ Low Stock</span>}
                             </div>
-                            {lastPurchasePrices[item.product?.toString()] !== undefined &&
-                              item.unitPrice < lastPurchasePrices[item.product?.toString()] && (
+                            {isBelowCost && (
                                 <span className="text-xs ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold">
                                   ⚠️ Below Cost
                                 </span>
@@ -2502,17 +2508,17 @@ const SalesOrders = ({ tabId }) => {
                         </div>
 
                         {/* Details Grid */}
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <div className={`grid gap-2 ${canViewStock ? 'grid-cols-4' : 'grid-cols-3'}`}>
                           {canViewStock && (
-                            <div>
-                              <p className="text-xs text-gray-500 mb-1">Stock</p>
-                              <p className="text-sm font-medium text-gray-900">
+                            <div className="min-w-0">
+                              <p className="text-[10px] text-gray-500 mb-1 truncate">Stock</p>
+                              <p className="text-xs font-medium text-gray-900 text-center bg-gray-100 border border-gray-200 rounded h-8 flex items-center justify-center px-1">
                                 {product?.inventory?.currentStock || 0}
                               </p>
                             </div>
                           )}
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1">Quantity</p>
+                          <div className="min-w-0">
+                            <p className="text-[10px] text-gray-500 mb-1 truncate">Quantity</p>
                             <DualUnitQuantityInput
                               product={product}
                               quantity={item.quantity}
@@ -2541,11 +2547,11 @@ const SalesOrders = ({ tabId }) => {
                               showBoxInput={dualUnitShowBoxInputEnabled && !hasDualUnit(product)}
                               showPiecesInput={dualUnitShowPiecesInputEnabled}
                               showPiecesUnitLabel={false}
-                              inputClassName="input text-center h-8 text-sm w-full"
+                              inputClassName="input text-center h-8 text-sm w-full px-1"
                             />
                           </div>
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1">Rate</p>
+                          <div className="min-w-0">
+                            <p className="text-[10px] text-gray-500 mb-1 truncate">Rate</p>
                             <input
                               type="number"
                               step="0.01"
@@ -2553,9 +2559,9 @@ const SalesOrders = ({ tabId }) => {
                               value={item.unitPrice}
                               onChange={(e) => {
                                 const newPrice = parseFloat(e.target.value) || 0;
-                                const costPrice = lastPurchasePrices[item.product?.toString()];
+                                const costPrice = getSoLineEffectiveCost(item, lastPurchasePrices);
 
-                                if (costPrice !== undefined && newPrice < costPrice) {
+                                if (costPrice != null && newPrice < costPrice) {
                                   const loss = costPrice - newPrice;
                                   const lossPercent = ((loss / costPrice) * 100).toFixed(1);
                                   const shouldProceed = window.confirm(
@@ -2577,17 +2583,16 @@ const SalesOrders = ({ tabId }) => {
                                 }));
                               }}
                               onFocus={(e) => e.target.select()}
-                              className={`input text-center h-8 text-sm w-full ${lastPurchasePrices[item.product?.toString()] !== undefined &&
-                                item.unitPrice < lastPurchasePrices[item.product?.toString()]
+                              className={`input text-center h-8 text-sm w-full px-1 ${isBelowCost
                                 ? 'border-red-500 bg-red-50'
                                 : ''
                                 }`}
                               min="0"
                             />
                           </div>
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1">Total</p>
-                            <p className="text-sm font-semibold text-gray-900 bg-gray-100 px-2 py-1 rounded border border-gray-200 text-center h-8 flex items-center justify-center">
+                          <div className="min-w-0">
+                            <p className="text-[10px] text-gray-500 mb-1 truncate">Total</p>
+                            <p className="text-xs font-semibold text-gray-900 bg-gray-100 px-1 py-1 rounded border border-gray-200 text-center h-8 flex items-center justify-center">
                               {Math.round(totalPrice)}
                             </p>
                           </div>
@@ -2596,13 +2601,9 @@ const SalesOrders = ({ tabId }) => {
                         {/* Cost Price (if shown) */}
                         {showCostPrice && canViewCostPrice && (
                           <div>
-                            <p className="text-xs text-gray-500 mb-1">{lastPurchasePrices[item.product?.toString()] !== undefined ? 'Last Purchase Price' : 'Cost'}</p>
+                            <p className="text-xs text-gray-500 mb-1">Cost</p>
                             <p className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200">
-                              {lastPurchasePrices[item.product?.toString()] !== undefined
-                                ? `${Math.round(lastPurchasePrices[item.product?.toString()])}`
-                                : (product?.pricing?.cost != null && product?.pricing?.cost !== '')
-                                  ? `${Math.round(Number(product.pricing.cost))}`
-                                  : 'N/A'}
+                              {lineDisplayCost ?? 'N/A'}
                             </p>
                           </div>
                         )}
@@ -2860,7 +2861,11 @@ const SalesOrders = ({ tabId }) => {
                   className="p-2 text-gray-400 transition-colors hover:text-gray-600 hover:bg-gray-100 rounded-full"
                   title="Refresh"
                 >
-                  <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+                  {isLoading ? (
+                    <LoadingSpinner size="sm" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
                 </button>
               </div>
             </div>
@@ -2978,8 +2983,7 @@ const SalesOrders = ({ tabId }) => {
         <div className="card-content p-0">
           {isLoading ? (
             <div className="p-8 text-center">
-              <RefreshCw className="h-8 w-8 animate-spin mx-auto text-gray-400" />
-              <p className="mt-2 text-gray-500">Loading sales orders...</p>
+              <LoadingInline message="Loading sales orders..." />
             </div>
           ) : error ? (
             <div className="p-8 text-center text-red-600">
@@ -2991,7 +2995,7 @@ const SalesOrders = ({ tabId }) => {
             </div>
           ) : (
             <>
-              <div className="overflow-x-auto">
+              <div className="table-scroll">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
@@ -3028,7 +3032,7 @@ const SalesOrders = ({ tabId }) => {
                           {order?.so_number ?? order?.soNumber ?? order?.invoiceNumber ?? '—'}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {order?.customer?.businessName ?? order?.customer?.business_name ?? order?.customer?.displayName ?? order?.customer?.name ?? 'Walk-in'}
+                          {getCustomerDisplayName(order?.customer, 'Walk-in')}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 capitalize">
                           {order?.order_type ?? order?.orderType ?? '—'}
@@ -3057,7 +3061,7 @@ const SalesOrders = ({ tabId }) => {
                           })()}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                          <div className="flex items-center gap-1">
+                          <div className="flex items-center gap-3">
                             <button
                               onClick={() => {
                                 setNotesEntity({ type: 'SalesOrder', id: order?.id ?? order?._id, name: order?.so_number ?? order?.soNumber });
@@ -3067,13 +3071,6 @@ const SalesOrders = ({ tabId }) => {
                               title="Notes"
                             >
                               <MessageSquare className="h-4 w-4" />
-                            </button>
-                            <button
-                              onClick={() => handleView(order)}
-                              className="text-blue-600 hover:text-blue-900"
-                              title="View"
-                            >
-                              <Eye className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => handlePrint(order)}
@@ -3310,7 +3307,7 @@ const SalesOrders = ({ tabId }) => {
               <div className="text-right">
                 <h5 className="font-semibold text-gray-900 mb-2">Customer Details</h5>
                 <div className="space-y-1 text-sm">
-                  <p><span className="font-medium">Customer:</span> {safeRender(selectedOrder.customer?.business_name ?? selectedOrder.customer?.businessName ?? selectedOrder.customer?.name ?? selectedOrder.customer?.displayName) ?? 'Walk-in'}</p>
+                  <p><span className="font-medium">Customer:</span> {getCustomerDisplayName(selectedOrder.customer, 'Walk-in')}</p>
                   {selectedOrder.customer?.email && (
                     <p><span className="font-medium">Email:</span> {safeRender(selectedOrder.customer.email)}</p>
                   )}
@@ -3369,7 +3366,7 @@ const SalesOrders = ({ tabId }) => {
                   isUpdating={updatingItemsConfirmation}
                 />
               )}
-              <div className="overflow-x-auto">
+              <div className="table-scroll">
                 <table className="min-w-full border border-gray-200 rounded-lg">
                   <thead className="bg-gray-50">
                     <tr>
@@ -3405,8 +3402,8 @@ const SalesOrders = ({ tabId }) => {
                           <div>
                             <div className="font-medium">
                               {typeof item.product === 'object' && item.product !== null
-                                ? (item.product.name || item.product.displayName || item.product.display_name || item.product.variantName || item.product.variant_name || 'Unknown Product')
-                                : (safeRender(item.product) || item.productData?.name || 'Unknown Product')}
+                                ? getProductDisplayName(item.product, 'Unknown Product')
+                                : (getProductDisplayName(item.productData, safeRender(item.product) || 'Unknown Product'))}
                             </div>
                             {item.product?.description && (
                               <div className="text-gray-500 text-xs">{safeRender(item.product.description)}</div>
@@ -3669,7 +3666,7 @@ const SalesOrders = ({ tabId }) => {
         isLoading={deleteConfirmation.isLoading}
       />
 
-    </div>
+    </PageLayout>
   );
 };
 

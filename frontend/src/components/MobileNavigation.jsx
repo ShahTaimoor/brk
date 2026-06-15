@@ -21,6 +21,7 @@ import {
   Warehouse,
   Clock,
   ArrowUpDown,
+  ArrowRightLeft,
   ArrowRight,
   FolderTree,
   Building2,
@@ -31,7 +32,7 @@ import {
 } from 'lucide-react';
 import { useResponsive } from './ResponsiveContainer';
 import { useAuth } from '../contexts/AuthContext';
-import { loadSidebarConfig } from './MultiTabLayout';
+import { loadSidebarConfig } from '../config/navigation';
 import { canAccessRoute } from '../config/routeAccess';
 
 const MobileNavigation = ({ user, onLogout, isLoggingOut = false }) => {
@@ -91,11 +92,10 @@ const MobileNavigation = ({ user, onLogout, isLoggingOut = false }) => {
     { path: '/cctv-access', icon: Camera, label: 'CCTV Access', badge: null },
     { path: '/inventory', icon: Package, label: 'Inventory', badge: null },
     { path: '/stock-movements', icon: ArrowUpDown, label: 'Stock Movements', badge: null },
+    { path: '/stock-transfers', icon: ArrowRightLeft, label: 'Stock Transfers', badge: null },
     { path: '/stock-ledger', icon: FileText, label: 'Stock Ledger', badge: null },
     { path: '/pl-statements', icon: BarChart3, label: 'P&L Statements', badge: null },
     { path: '/balance-sheet-statement', icon: FileText, label: 'Balance Sheet', badge: null },
-    { path: '/sales-performance', icon: TrendingUp, label: 'Sales Performance', badge: null },
-    { path: '/inventory-reports', icon: Warehouse, label: 'Inventory Reports', badge: null },
     { path: '/reports', icon: BarChart3, label: 'Reports', badge: null },
     { path: '/backdate-report', icon: Clock, label: 'Backdate Report', badge: null },
     { path: '/chart-of-accounts', icon: FolderTree, label: 'Chart of Accounts', badge: null },

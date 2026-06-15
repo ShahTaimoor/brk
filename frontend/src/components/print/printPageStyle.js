@@ -9,15 +9,15 @@
  * Canonical values:
  *   body font-size: 11px      |  th/td border: 1px solid #000
  *   th/td padding:  4px 6px   |  th/td font-size: 11px
- *   th background:  #f3f4f6   |  @page A4: margin 10mm
+ *   th background:  #f3f4f6   |  @page A4: margin 0 (content padding 10mm)
  */
 
 export const PRINT_PAGE_STYLE = `
-  @page { size: A4 portrait; margin: 10mm; }
+  @page { size: A4 portrait; margin: 0; }
   * { box-sizing: border-box; }
   body {
     margin: 0 !important;
-    padding: 0 !important;
+    padding: 10mm !important;
     font-family: 'Inter', Arial, Helvetica, sans-serif !important;
     font-size: 11px !important;
     color: #000 !important;
@@ -26,7 +26,7 @@ export const PRINT_PAGE_STYLE = `
     print-color-adjust: exact !important;
   }
   .no-print, .btn, button, .print-toolbar { display: none !important; }
-  .print-wrapper, .print-preview-scale { box-shadow: none !important; border: none !important; }
+  .print-wrapper, .print-preview-scale, .print-modal-preview, .print-document { box-shadow: none !important; border: none !important; overflow: visible !important; }
 
   table { width: 100% !important; border-collapse: collapse !important; }
   th, td { border: 1px solid #000 !important; padding: 4px 6px !important; font-size: 11px !important; line-height: 1.2 !important; }
@@ -69,6 +69,21 @@ export const PRINT_PAGE_STYLE = `
     -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;
   }
 
+  .print-wrapper, .print-preview-scale, .print-modal-preview, .print-document {
+    transform: none !important;
+  }
+
+  .print-modal-preview .print-document__company {
+    flex-direction: row !important;
+    align-items: center !important;
+  }
+  .print-modal-preview .print-document__company-details { text-align: right !important; }
+  .print-modal-preview .print-document__info-grid {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) !important;
+  }
+  .print-modal-preview .print-document__summary { justify-content: flex-end !important; }
+  .print-modal-preview .print-document__summary-table { width: 260px !important; }
+
   tr { page-break-inside: avoid !important; }
   thead { display: table-header-group !important; }
   .text-right { text-align: right !important; }
@@ -99,17 +114,20 @@ export const THERMAL_PRINT_PAGE_STYLE = `
   .no-print, .btn, button, .print-toolbar { display: none !important; }
 
   .thermal-receipt {
-    width: 72mm !important;
-    max-width: 72mm !important;
-    margin: 0 auto !important;
-    padding: 2mm 1mm !important;
+    width: 68mm !important;
+    max-width: 68mm !important;
+    margin: 0 2mm !important;
+    padding: 1mm 0 !important;
     font-family: Arial, Helvetica, sans-serif !important;
-    font-size: 13px !important;
+    font-size: 11px !important;
     font-weight: 600 !important;
     line-height: 1.1 !important;
     display: block !important;
     color: #000 !important;
     transform: none !important;
+  }
+  .thermal-receipt__store-name {
+    font-size: 19px !important;
   }
   .thermal-receipt table {
     border-collapse: collapse !important;
@@ -120,25 +138,26 @@ export const THERMAL_PRINT_PAGE_STYLE = `
   .thermal-receipt th, .thermal-receipt td {
     border: none !important;
     border-bottom: 1px solid #000 !important;
-    padding: 1mm 0 !important;
-    font-size: 12px !important;
+    padding: 0.8mm 0 !important;
+    font-size: 10px !important;
     font-weight: 600 !important;
     word-wrap: break-word !important;
     overflow: hidden !important;
   }
   /* Column widths for thermal */
-  .thermal-receipt th:nth-child(1), .thermal-receipt td:nth-child(1) { width: 40% !important; text-align: left !important; }
-  .thermal-receipt th:nth-child(2), .thermal-receipt td:nth-child(2) { width: 15% !important; text-align: center !important; }
-  .thermal-receipt th:nth-child(3), .thermal-receipt td:nth-child(3) { width: 20% !important; text-align: right !important; }
-  .thermal-receipt th:nth-child(4), .thermal-receipt td:nth-child(4) { width: 25% !important; text-align: right !important; }
+  .thermal-receipt th:nth-child(1), .thermal-receipt td:nth-child(1) { width: 8% !important; text-align: center !important; }
+  .thermal-receipt th:nth-child(2), .thermal-receipt td:nth-child(2) { width: 42% !important; text-align: left !important; }
+  .thermal-receipt th:nth-child(3), .thermal-receipt td:nth-child(3) { width: 10% !important; text-align: center !important; }
+  .thermal-receipt th:nth-child(4), .thermal-receipt td:nth-child(4) { width: 20% !important; text-align: right !important; }
+  .thermal-receipt th:nth-child(5), .thermal-receipt td:nth-child(5) { width: 20% !important; text-align: right !important; }
 
   .thermal-receipt__divider {
     border-top: 1px dashed #000 !important;
-    margin: 2mm 0 !important;
+    margin: 1mm 0 !important;
     width: 100% !important;
   }
   .thermal-receipt__summary-row--total {
-    font-size: 16px !important;
+    font-size: 13px !important;
     font-weight: bold !important;
     border-top: 1px solid #000 !important;
     margin-top: 1mm !important;
@@ -156,11 +175,12 @@ export const THERMAL_PRINT_PAGE_STYLE = `
     padding: 0 !important;
     box-shadow: none !important;
     border: none !important;
+    overflow: visible !important;
   }
   .thermal-receipt canvas {
     width: 52mm !important;
     max-width: 52mm !important;
-    height: 14mm !important;
+    height: 10mm !important;
     display: block !important;
     margin: 0 auto !important;
     image-rendering: auto !important;

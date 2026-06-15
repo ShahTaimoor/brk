@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import { useDispatch } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   ShoppingCart,
@@ -24,7 +26,7 @@ import {
 } from 'lucide-react';
 import BaseModal from '../components/BaseModal';
 import { useLazyGetLastPurchasePriceQuery, useGetLastPurchasePricesMutation } from '../store/services/productsApi';
-import { useGetCustomerQuery, useLazySearchCustomersQuery } from '../store/services/customersApi';
+import { useGetCustomerQuery } from '../store/services/customersApi';
 import { useDebouncedCustomerSearch } from '../hooks/useDebouncedCustomerSearch';
 import {
   useCreateSaleMutation,
@@ -38,7 +40,6 @@ import {
 } from '../store/services/salesApi';
 import { useCheckApplicableDiscountsMutation } from '../store/services/discountsApi';
 import { useGetBanksQuery } from '../store/services/banksApi';
-import { useFuzzySearch } from '../hooks/useFuzzySearch';
 import { DualUnitQuantityInput } from '../components/DualUnitQuantityInput';
 import {
   usePostJournalMutation,
@@ -52,7 +53,7 @@ import {
   computeTotalPieces,
   formatStockDualLabel,
 } from '../utils/dualUnitUtils';
-import { handleApiError, showSuccessToast, showErrorToast } from '../utils/errorHandler';
+import { handleApiError, showSuccessToast, showErrorToast, getErrorMessage } from '../utils/errorHandler';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -69,6 +70,7 @@ import { CartItemsTableSection } from '../components/order/CartItemsTableSection
 import { CartTableHeader } from '../components/order/CartTableHeader';
 import { LoadingSpinner, LoadingButton, LoadingCard, LoadingGrid, LoadingPage, LoadingInline } from '../components/LoadingSpinner';
 import AsyncErrorBoundary from '../components/AsyncErrorBoundary';
+import { PageLayout } from '../components/layout/PageLayout';
 import { ClearConfirmationDialog } from '../components/ConfirmationDialog';
 import { useClearConfirmation } from '../hooks/useConfirmation';
 import PaymentModal from '../components/PaymentModal';
@@ -88,13 +90,23 @@ import { useCompanyInfo } from '../hooks/useCompanyInfo';
 import { PERMISSIONS } from '../config/rbacConfig';
 import { getLocalDateString, getCurrentDatePakistan } from '../utils/dateUtils';
 import { formatDate } from '../utils/formatters';
+import { getCustomerDisplayName, getProductDisplayName } from '../utils/partyDisplay';
 import DateFilter from '../components/DateFilter';
 import PaginationControls from '../components/PaginationControls';
 import ExcelExportButton from '../components/ExcelExportButton';
 import PdfExportButton from '../components/PdfExportButton';
 import { getInvoicePdfPayload } from '../utils/invoicePdfUtils';
+import { buildCartInvoiceOrder } from '../utils/buildCartInvoiceOrder';
+import {
+  computeLedgerPrintBalances,
+  computePostSaveLedgerBalance,
+  computePostSavePreviousBalance,
+} from '../utils/printBalanceUtils';
+import { accountingApi } from '../store/services/accountingApi';
+import WhatsAppShareButton from '../components/invoice/WhatsAppShareButton';
 
 import { ProductSearch } from '../components/sales/ProductSearch';
+import COGSProfitReportModal from '../components/sales/COGSProfitReportModal';
 import { DuplicateLineItemMergeModal } from '../components/order/DuplicateLineItemMergeModal';
 import { ProductImagePreviewModal } from '../components/order/ProductImagePreviewModal';
 import { DocumentNumberField } from '../components/order/DocumentNumberField';
@@ -124,11 +136,30 @@ import {
   priceTypeFromBusinessType,
   resolveOrderTypeForSave,
 } from '../utils/priceTypeUtils';
+import {
+  getProductCostPrice,
+  getProductDisplayCostPrice,
+  getEffectiveCostForLossCheck,
+} from '../utils/productCostUtils';
 
 function normalizeCartProductId(product) {
   if (!product) return '';
   const id = product._id ?? product.id;
   return id != null ? String(id) : '';
+}
+
+function getCartLineLastPurchasePrice(product, lastPurchasePrices) {
+  const id = normalizeCartProductId(product);
+  if (!id || lastPurchasePrices[id] === undefined) return null;
+  const value = Number(lastPurchasePrices[id]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getCartLineEffectiveCost(product, lastPurchasePrices) {
+  return getEffectiveCostForLossCheck(
+    product,
+    getCartLineLastPurchasePrice(product, lastPurchasePrices)
+  );
 }
 
 /** Cart → print payload: names, optional manual photo, dual-unit qty for invoice/PDF. */
@@ -155,6 +186,8 @@ function mapCartItemsForInvoicePrint(cart) {
 }
 
 export const Sales = ({ tabId, editData }) => {
+  const dispatch = useDispatch();
+
   // Store refetch function from ProductSearch component
   const [refetchProducts, setRefetchProducts] = useState(null);
 
@@ -211,7 +244,11 @@ export const Sales = ({ tabId, editData }) => {
   const [inlineEditData, setInlineEditData] = useState(null);
   const [invoiceDeleteTarget, setInvoiceDeleteTarget] = useState(null);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
+  const [isCOGSProfitModalOpen, setIsCOGSProfitModalOpen] = useState(false);
+  const [cogsProfitModalTab, setCogsProfitModalTab] = useState('cogs');
   const activeEditData = inlineEditData?.isEditMode ? inlineEditData : editData;
+  /** Net − paid when the invoice was loaded into edit mode; drives live balance preview. */
+  const [editSavedInvoiceRemaining, setEditSavedInvoiceRemaining] = useState(null);
 
   useEffect(() => {
     const handleConfigChange = () => {
@@ -230,6 +267,7 @@ export const Sales = ({ tabId, editData }) => {
   const { isMobile, isTablet } = useResponsive();
   const { activeTabId, updateTabTitle, getActiveTab } = useTab();
   const { hasPermission, user } = useAuth();
+  const navigate = useNavigate();
   const { getPartyPermissions } = useSensitiveDataPermissions();
   const { companyInfo: companySettings } = useCompanyInfo();
 
@@ -237,7 +275,7 @@ export const Sales = ({ tabId, editData }) => {
   const allowManualCostPriceEnabled = companySettings.orderSettings?.allowManualCostPrice === true;
   const globalShowCostPriceAllowed = companySettings.orderSettings?.showCostPrice !== false && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS);
 
-  const dualUnitShowBoxInputEnabled = companySettings.orderSettings?.dualUnitShowBoxInput !== false;
+  const dualUnitShowBoxInputEnabled = companySettings.orderSettings?.dualUnitShowBoxInput === true;
   const dualUnitShowPiecesInputEnabled = companySettings.orderSettings?.dualUnitShowPiecesInput !== false;
   const showSalesDiscountCodeEnabled = companySettings.orderSettings?.showSalesDiscountCode === true;
   const autoPrintEnabled = companySettings.printSettings?.autoPrintAfterSale !== false;
@@ -261,24 +299,13 @@ export const Sales = ({ tabId, editData }) => {
       const quantity = Number(item.quantity) || 0;
       const salePrice = Number(item.unitPrice) || 0;
 
-      const lastPurchaseCost =
-        productId && lastPurchasePrices[productId] !== undefined
-          ? Number(lastPurchasePrices[productId])
-          : null;
-
-      const fallbackCost =
-        lastPurchaseCost ??
-        Number(item.product.pricing?.cost) ??
-        Number(item.product.pricing?.purchasePrice) ??
-        Number(item.product.pricing?.wholesaleCost) ??
-        0;
-
-      const profitPerUnit = salePrice - (Number.isFinite(fallbackCost) ? fallbackCost : 0);
+      const catalogCost = getProductCostPrice(item.product);
+      const profitPerUnit = salePrice - (Number.isFinite(catalogCost) ? catalogCost : 0);
       const lineProfit = profitPerUnit * quantity;
 
       return sum + (Number.isFinite(lineProfit) ? lineProfit : 0);
     }, 0);
-  }, [cart, lastPurchasePrices]);
+  }, [cart]);
 
   // Generate invoice number
   const generateInvoiceNumber = (customer) => {
@@ -301,7 +328,7 @@ export const Sales = ({ tabId, editData }) => {
     const time = String(now.getTime()).slice(-4); // Last 4 digits of timestamp
 
     // Format: CUSTOMER-INITIALS-YYYYMMDD-XXXX (displayName may be missing from API; use businessName/name fallback)
-    const nameStr = customer.displayName ?? customer.businessName ?? customer.name ?? 'CUST';
+    const nameStr = getCustomerDisplayName(customer, 'CUST');
     const customerInitials = String(nameStr)
       .split(' ')
       .map(word => word.charAt(0).toUpperCase())
@@ -317,6 +344,7 @@ export const Sales = ({ tabId, editData }) => {
       // Set the customer
       if (activeEditData.customer) {
         setSelectedCustomer(activeEditData.customer);
+        setCustomerSearchTerm(getCustomerDisplayName(activeEditData.customer, ''));
       }
 
       // Set the invoice number
@@ -442,13 +470,29 @@ export const Sales = ({ tabId, editData }) => {
         setBillDate(getLocalDateString());
       }
 
+      const savedTotal = Number(
+        activeEditData.total ??
+        activeEditData.pricing?.total ??
+        0
+      ) || 0;
+      const savedPaid = Number(
+        activeEditData.amount_paid ??
+        activeEditData.amountPaid ??
+        activeEditData.payment?.amountPaid ??
+        activeEditData.payment?.amountReceived ??
+        0
+      ) || 0;
+      setEditSavedInvoiceRemaining(Math.max(0, savedTotal - savedPaid));
+
       // Data loaded successfully (no toast needed as Orders already shows opening message)
+    } else {
+      setEditSavedInvoiceRemaining(null);
     }
   }, [activeEditData?.orderId]); // Only depend on orderId to prevent multiple executions
 
   // RTK Query hooks
   const { data: banksData, isLoading: banksLoading } = useGetBanksQuery(
-    { isActive: true },
+    { isActive: true, all: 'true' },
     { staleTime: 5 * 60_000 }
   );
 
@@ -585,6 +629,20 @@ export const Sales = ({ tabId, editData }) => {
   }, [fetchOrderById]);
 
   /** Saved-invoice list uses minimal rows (no line items); load full sale before print preview. */
+  const fetchFreshSavedInvoice = useCallback(
+    async (invoice) => {
+      const id = invoice?._id || invoice?.id;
+      if (!id) return invoice;
+      try {
+        const result = await fetchOrderById(id).unwrap();
+        return result?.order || result?.data?.order || result || invoice;
+      } catch {
+        return invoice;
+      }
+    },
+    [fetchOrderById]
+  );
+
   const openSavedInvoicePrintPreview = useCallback(
     async (invoice) => {
       const id = invoice?._id || invoice?.id;
@@ -594,8 +652,7 @@ export const Sales = ({ tabId, editData }) => {
         return;
       }
       try {
-        const result = await fetchOrderById(id).unwrap();
-        const full = result?.order || result?.data?.order || result || invoice;
+        const full = await fetchFreshSavedInvoice(invoice);
         setSavedInvoicePrintOrder(full);
         setShowSavedInvoicePrintModal(true);
       } catch (err) {
@@ -604,7 +661,7 @@ export const Sales = ({ tabId, editData }) => {
         setShowSavedInvoicePrintModal(true);
       }
     },
-    [fetchOrderById]
+    [fetchFreshSavedInvoice]
   );
 
   const handleDeleteSavedInvoice = useCallback(async (invoice) => {
@@ -793,7 +850,9 @@ export const Sales = ({ tabId, editData }) => {
     type: 'customer',
     id: selectedCustomerId
   }, {
-    skip: !selectedCustomerId
+    skip: !selectedCustomerId,
+    refetchOnMountOrArgChange: true,
+    refetchOnFocus: true,
   });
 
   const customerWithBalance = selectedCustomerDetail?.data?.customer ?? selectedCustomerDetail?.customer ?? selectedCustomerDetail ?? selectedCustomer;
@@ -839,6 +898,15 @@ export const Sales = ({ tabId, editData }) => {
   }, [customers]);
 
   const subtotal = cart.reduce((sum, item) => sum + (item.unitPrice * item.quantity), 0);
+  const discountCheckItems = useMemo(
+    () =>
+      cart.map((item) => ({
+        product: item.product?._id ?? item.product?.id ?? item.product,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+      })),
+    [cart]
+  );
   const codeDiscountAmount = appliedDiscounts.reduce((sum, discount) => sum + discount.amount, 0);
 
   // Fetch applicable discount codes when cart subtotal or customer changes
@@ -849,7 +917,7 @@ export const Sales = ({ tabId, editData }) => {
     }
     let cancelled = false;
     checkApplicableDiscounts({
-      orderData: { total: subtotal },
+      orderData: { total: subtotal, items: discountCheckItems },
       customerData: selectedCustomer ? { id: selectedCustomer._id || selectedCustomer.id } : null
     })
       .unwrap()
@@ -862,7 +930,7 @@ export const Sales = ({ tabId, editData }) => {
         if (!cancelled) setApplicableDiscountList([]);
       });
     return () => { cancelled = true; };
-  }, [subtotal, selectedCustomer?._id, selectedCustomer?.id]);
+  }, [subtotal, discountCheckItems, selectedCustomer?._id, selectedCustomer?.id]);
 
   const {
     directDiscountAmount,
@@ -880,6 +948,50 @@ export const Sales = ({ tabId, editData }) => {
   const change = amountPaid - total;
   const manualDiscountDisplay = Math.max(0, Math.round(directDiscountAmount || 0));
 
+  const checkoutPartyBalances = useMemo(() => {
+    if (!selectedCustomer) {
+      return {
+        previousBalance: 0,
+        totalReceivables: 0,
+        projectedLedger: 0,
+        invoiceRemaining: 0,
+      };
+    }
+
+    const ledgerBalance = Number.isFinite(Number(currentBalanceNum))
+      ? Number(currentBalanceNum)
+      : (selectedCustomer.currentBalance !== undefined && selectedCustomer.currentBalance !== null
+        ? Number(selectedCustomer.currentBalance)
+        : ((selectedCustomer.pendingBalance || 0) - (selectedCustomer.advanceBalance || 0)));
+
+    const isEditMode = Boolean(activeEditData?.orderId);
+    const invoiceRemaining = Math.max(0, Number(total) - (Number(amountPaid) || 0));
+
+    const printBalances = computeLedgerPrintBalances({
+      ledgerBalance,
+      totalValue: total,
+      receivedAmount: amountPaid || 0,
+      orderData: isEditMode
+        ? { id: activeEditData.orderId, isEditMode: true }
+        : null,
+    });
+
+    return {
+      previousBalance: printBalances.previousBalance,
+      totalReceivables: printBalances.combinedRemainingBalance,
+      projectedLedger: printBalances.combinedRemainingBalance,
+      invoiceRemaining,
+    };
+  }, [
+    selectedCustomer,
+    currentBalanceNum,
+    total,
+    amountPaid,
+    activeEditData?.orderId,
+    cart.length,
+    subtotal,
+  ]);
+
   // The orderType sent to the backend always reflects the user-selected
   // Price Type so the value round-trips correctly between create and edit.
   // We also preserve return/exchange overrides if the order was loaded as
@@ -887,8 +999,151 @@ export const Sales = ({ tabId, editData }) => {
   const resolvedOrderTypeForSave = () =>
     resolveOrderTypeForSave(priceType, activeEditData?.orderType);
 
+  const createdByUser = useMemo(
+    () =>
+      user
+        ? {
+            firstName: user.firstName,
+            lastName: user.lastName,
+            name:
+              user.displayName ||
+              `${user.firstName || ''} ${user.lastName || ''}`.trim() ||
+              'Admin',
+          }
+        : { name: 'Admin' },
+    [user]
+  );
+
+  const patchCustomerLedgerCache = useCallback((customerId, balance) => {
+    if (!customerId || !Number.isFinite(Number(balance))) return;
+    dispatch(
+      accountingApi.util.upsertQueryData(
+        'getUnifiedBalance',
+        { type: 'customer', id: customerId },
+        {
+          success: true,
+          type: 'customer',
+          id: customerId,
+          balance: Number(balance),
+          timestamp: new Date().toISOString(),
+        }
+      )
+    );
+  }, [dispatch]);
+
+  const enrichOrderForPrint = useCallback((
+    order,
+    paidAmount = amountPaid,
+    serverLedgerBalance = null,
+    serverPreviousBalance = null,
+  ) => {
+    if (!order) return order;
+
+    const paid = Number(paidAmount) || 0;
+    const orderId = order.id || order._id;
+    const invoiceRemaining = Math.max(0, total - paid);
+    const wasEdit = Boolean(activeEditData?.orderId);
+    const ledgerBalance = Number.isFinite(Number(serverLedgerBalance))
+      ? Number(serverLedgerBalance)
+      : computePostSaveLedgerBalance({
+        ledgerBalanceBefore: currentBalanceNum,
+        totalValue: total,
+        receivedAmount: paid,
+        savedInvoiceRemaining: editSavedInvoiceRemaining,
+        isNewSale: !wasEdit,
+      });
+    const previousBalance = Number.isFinite(Number(serverPreviousBalance))
+      ? Number(serverPreviousBalance)
+      : computePostSavePreviousBalance({
+        ledgerBalanceAfter: ledgerBalance,
+        totalValue: total,
+        receivedAmount: paid,
+        ledgerBalanceBefore: currentBalanceNum,
+        isNewSale: !wasEdit,
+      });
+
+    return {
+      ...order,
+      isEditMode: true,
+      id: orderId,
+      _id: orderId,
+      ledgerBalance,
+      previousBalance,
+      ledgerBalanceFresh: true,
+      payment: {
+        ...(order.payment || {}),
+        amountPaid: paid,
+        amountReceived: paid,
+        remainingBalance: invoiceRemaining,
+      },
+    };
+  }, [activeEditData?.orderId, amountPaid, currentBalanceNum, total, editSavedInvoiceRemaining]);
+
+  const buildSalesCartOrder = useCallback(() => {
+    const base = buildCartInvoiceOrder({
+      selectedParty: selectedCustomer,
+      partyType: 'customer',
+      cartItems: mapCartItemsForInvoicePrint(cart),
+      pricing: {
+        subtotal,
+        discountAmount: totalDiscountAmount,
+        taxAmount: tax,
+        isTaxExempt: !taxSystemEnabled,
+        total,
+      },
+      payment: {
+        method: paymentMethod,
+        bankAccount: paymentMethod === 'bank' ? selectedBankAccount : null,
+        amountPaid,
+        remainingBalance: total - amountPaid,
+        isPartialPayment: amountPaid < total,
+        isAdvancePayment,
+        advanceAmount: isAdvancePayment ? amountPaid - total : 0,
+      },
+      invoiceNumber,
+      orderType: resolvedOrderTypeForSave(),
+      createdByUser,
+      isEditMode: Boolean(activeEditData?.orderId),
+    });
+
+    if (activeEditData?.orderId) {
+      return {
+        ...base,
+        _id: activeEditData.orderId,
+        id: activeEditData.orderId,
+        orderNumber: activeEditData.orderNumber || invoiceNumber,
+        invoiceNumber: activeEditData.orderNumber || invoiceNumber,
+      };
+    }
+    return base;
+  }, [
+    selectedCustomer,
+    cart,
+    subtotal,
+    totalDiscountAmount,
+    tax,
+    taxSystemEnabled,
+    total,
+    paymentMethod,
+    selectedBankAccount,
+    amountPaid,
+    isAdvancePayment,
+    invoiceNumber,
+    createdByUser,
+    activeEditData,
+    priceType,
+  ]);
+
+  const handleCustomerSearch = (searchTerm) => {
+    setCustomerSearchTerm(searchTerm);
+    if (searchTerm === '') {
+      setSelectedCustomer(null);
+    }
+  };
+
   const handleCustomerSelect = async (customer) => {
     setSelectedCustomer(customer);
+    setCustomerSearchTerm(getCustomerDisplayName(customer, ''));
 
     // Reset price states when customer changes
     setOriginalPrices({});
@@ -911,8 +1166,7 @@ export const Sales = ({ tabId, editData }) => {
     // Update tab title to show customer name
     const activeTab = getActiveTab();
     if (activeTab && customer) {
-      const customerLabel = customer.businessName ?? customer.business_name ?? customer.displayName ?? customer.name ?? 'Customer';
-      updateTabTitle(activeTab.id, `Sales - ${customerLabel}`);
+      updateTabTitle(activeTab.id, `Sales - ${getCustomerDisplayName(customer, 'Customer')}`);
     }
   };
 
@@ -961,15 +1215,12 @@ export const Sales = ({ tabId, editData }) => {
     );
 
     if (existingIndex >= 0) {
-      const displayName = product.isVariant
-        ? (product.displayName || product.variantName || product.name)
-        : product.name;
       setDuplicateCartMerge({
         productId,
         pendingItem: item,
-        displayName: displayName || 'Product',
+        displayName: getProductDisplayName(product, 'Product'),
       });
-      return;
+      return 'duplicate';
     }
 
     let highlightLineIndex = null;
@@ -1027,10 +1278,7 @@ export const Sales = ({ tabId, editData }) => {
       const availableStock = product.inventory?.currentStock || 0;
 
       if (combinedQuantity > availableStock) {
-        const displayName = product.isVariant
-          ? (product.displayName || product.variantName || product.name)
-          : product.name;
-        toast.warning(`Stock for ${displayName} is insufficient. Adding ${item.quantity} units anyway.`);
+        toast.warning(`Stock for ${getProductDisplayName(product, 'Product')} is insufficient. Adding ${item.quantity} units anyway.`);
       }
 
       const newQty = existingItem.quantity + item.quantity;
@@ -1116,9 +1364,7 @@ export const Sales = ({ tabId, editData }) => {
     // Check if sale price is less than cost price (always check, regardless of showCostPrice)
     const cartItem = cart.find(item => item.product._id === productId);
     if (cartItem) {
-      const costPrice = lastPurchasePrices[productId] !== undefined
-        ? lastPurchasePrices[productId]
-        : cartItem.product.pricing?.cost;
+      const costPrice = getCartLineEffectiveCost(cartItem.product, lastPurchasePrices);
       if (costPrice !== undefined && costPrice !== null && newPrice < costPrice) {
         const loss = costPrice - newPrice;
         const lossPercent = ((loss / costPrice) * 100).toFixed(1);
@@ -1294,6 +1540,7 @@ export const Sales = ({ tabId, editData }) => {
     setDirectDiscount({ type: 'amount', value: 0 });
     setNotes('');
     setInvoiceNumber('');
+    setAutoGenerateInvoice(true);
     if (resetBillDate) {
       setBillDate(getLocalDateString());
     }
@@ -1302,9 +1549,10 @@ export const Sales = ({ tabId, editData }) => {
     setIsLastPricesApplied(false);
     setPriceStatus({});
     setInlineEditData(null);
+    setEditSavedInvoiceRemaining(null);
+    setDuplicateCartMerge(null);
+    setProductSearchResetKey((k) => k + 1);
   }, []);
-
-
 
   const handleCreateOrder = useCallback(async (orderData) => {
     // Double-check: prevent duplicate calls even if handleCheckout guard fails
@@ -1333,12 +1581,24 @@ export const Sales = ({ tabId, editData }) => {
       // No need to manually refetch - it happens automatically via cache invalidation
       // This prevents React warnings about updating components during render
 
+      const serverLedger = result?.customerLedgerBalance;
+      const serverPrevious = result?.customerPreviousBalance;
+      const customerId =
+        result?.order?.customer_id ||
+        result?.order?.customerId ||
+        selectedCustomer?.id ||
+        selectedCustomer?._id;
+      if (customerId && serverLedger != null) {
+        patchCustomerLedgerCache(customerId, serverLedger);
+      }
+
       if (result?.order && autoPrintEnabled) {
-        setDirectPrintOrder(result.order);
+        setDirectPrintOrder(enrichOrderForPrint(result.order, amountPaid, serverLedger, serverPrevious));
       } else {
         // No print flow: complete and clear immediately.
         resetSaleDraft({ resetBillDate: true });
       }
+      setEditSavedInvoiceRemaining(Math.max(0, total - (Number(amountPaid) || 0)));
       resetSubmittingState();
     } catch (error) {
       // Handle duplicate request errors gracefully (409)
@@ -1356,12 +1616,15 @@ export const Sales = ({ tabId, editData }) => {
         setTimeout(() => {
           resetSubmittingState();
         }, (retryAfter + 2) * 1000);
+      } else if (error?.data?.code === 'DAY_ALREADY_CLOSED') {
+        toast.error(error?.data?.message || 'This business day is already closed.');
+        resetSubmittingState();
       } else {
         handleApiError(error, 'Create Sale');
         resetSubmittingState();
       }
     }
-  }, [createSale, resetSubmittingState, autoPrintEnabled, resetSaleDraft, refetchProducts]);
+  }, [createSale, resetSubmittingState, autoPrintEnabled, resetSaleDraft, refetchProducts, enrichOrderForPrint, amountPaid, total, patchCustomerLedgerCache, selectedCustomer]);
 
   const handleUpdateOrder = useCallback(async (orderId, updateData) => {
     // Double-check: prevent duplicate calls even if handleCheckout guard fails
@@ -1389,11 +1652,26 @@ export const Sales = ({ tabId, editData }) => {
       // No need to manually refetch - it happens automatically via cache invalidation
       // This prevents React warnings about updating components during render
 
+      const paidAfterUpdate = Number(updateData?.amountReceived ?? amountPaid) || 0;
+      const serverLedger = result?.customerLedgerBalance;
+      const serverPrevious = result?.customerPreviousBalance;
+      const customerId =
+        result?.order?.customer_id ||
+        result?.order?.customerId ||
+        updateData?.customer ||
+        selectedCustomer?.id ||
+        selectedCustomer?._id;
+      if (customerId && serverLedger != null) {
+        patchCustomerLedgerCache(customerId, serverLedger);
+      }
+
       if (result?.order && autoPrintEnabled) {
-        setDirectPrintOrder(result.order);
+        setDirectPrintOrder(enrichOrderForPrint(result.order, paidAfterUpdate, serverLedger, serverPrevious));
+        setEditSavedInvoiceRemaining(Math.max(0, total - paidAfterUpdate));
       } else {
         // No print flow: complete and clear immediately.
         resetSaleDraft();
+        setEditSavedInvoiceRemaining(Math.max(0, total - paidAfterUpdate));
       }
       resetSubmittingState();
     } catch (error) {
@@ -1411,12 +1689,15 @@ export const Sales = ({ tabId, editData }) => {
         setTimeout(() => {
           resetSubmittingState();
         }, (retryAfter + 2) * 1000);
+      } else if (error?.data?.code === 'DAY_ALREADY_CLOSED') {
+        toast.error(error?.data?.message || 'This business day is already closed.');
+        resetSubmittingState();
       } else {
         handleApiError(error, 'Update Order');
         resetSubmittingState();
       }
     }
-  }, [updateOrder, resetSubmittingState, isSubmittingRef, autoPrintEnabled, resetSaleDraft, refetchProducts]);
+  }, [updateOrder, resetSubmittingState, isSubmittingRef, autoPrintEnabled, resetSaleDraft, refetchProducts, enrichOrderForPrint, amountPaid, total, patchCustomerLedgerCache, selectedCustomer]);
 
   const handleCheckout = useCallback((e) => {
     // Prevent default and stop propagation to avoid any event bubbling issues
@@ -1644,7 +1925,7 @@ export const Sales = ({ tabId, editData }) => {
 
   return (
     <AsyncErrorBoundary>
-      <div className="space-y-4 lg:space-y-6">
+      <PageLayout className="space-y-4 lg:space-y-6">
         {/* Modern Header Section */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3">
           <div className="flex flex-col lg:flex-row lg:items-center gap-3 lg:gap-4">
@@ -1682,8 +1963,10 @@ export const Sales = ({ tabId, editData }) => {
                   items={customers}
                   selectedItem={selectedCustomer}
                   onSelect={handleCustomerSelect}
-                  onSearch={setCustomerSearchTerm}
+                  onSearch={handleCustomerSearch}
+                  searchValue={customerSearchTerm}
                   loading={customersLoading || customersFetching}
+                  serverSideSearch
                   canViewBalance={hasPermission(PERMISSIONS.VIEW_CUSTOMER_BALANCE)}
                 />
               </div>
@@ -1692,7 +1975,7 @@ export const Sales = ({ tabId, editData }) => {
             <CustomerBalanceStrip
               customer={selectedCustomer}
               canViewBalance={hasPermission(PERMISSIONS.VIEW_CUSTOMER_BALANCE)}
-              balanceOverride={currentBalanceNum}
+              balanceOverride={checkoutPartyBalances.projectedLedger}
               creditLimitOverride={
                 selectedCustomer?.creditLimit ??
                 selectedCustomer?.credit_limit ??
@@ -1802,6 +2085,12 @@ export const Sales = ({ tabId, editData }) => {
                   const isLowStock = item.product.inventory?.currentStock <= item.product.inventory?.reorderPoint;
 
                   const serialHighlight = highlightedCartLineIndex === index;
+                  const lineDisplayCost = getProductDisplayCostPrice(item.product);
+                  const lineEffectiveCost = getCartLineEffectiveCost(item.product, lastPurchasePrices);
+                  const isBelowCost =
+                    hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) &&
+                    lineEffectiveCost != null &&
+                    item.unitPrice < lineEffectiveCost;
 
                   return (
                     <div
@@ -1816,7 +2105,7 @@ export const Sales = ({ tabId, editData }) => {
                       style={{ transform: `translateY(${virtualRow.start}px)` }}
                     >
                       {/* Mobile Card View */}
-                      <div className="md:hidden mb-4 p-3 border border-gray-200 rounded-lg bg-white shadow-sm">
+                      <div className="lg:hidden mb-4 p-3 border border-gray-200 rounded-lg bg-white shadow-sm">
                         <div className="flex items-start justify-between mb-3">
                           <div className="flex-1 min-w-0 flex items-center gap-3">
                             {showProductImages && (
@@ -1835,9 +2124,7 @@ export const Sales = ({ tabId, editData }) => {
                                   variant="mobile"
                                 />
                                 <span className="font-medium text-sm truncate">
-                                  {item.product.isVariant
-                                    ? (item.product.displayName || item.product.variantName || item.product.name)
-                                    : item.product.name}
+                                  {getProductDisplayName(item.product, 'Product')}
                                 </span>
                               </div>
                               {item.product.isVariant && (
@@ -1847,9 +2134,7 @@ export const Sales = ({ tabId, editData }) => {
                               )}
                               <div className="flex flex-wrap items-center gap-2 mt-1">
                                 {isLowStock && <span className="text-yellow-600 text-xs">⚠️ Low Stock</span>}
-                                {lastPurchasePrices[item.product._id] !== undefined &&
-                                  hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) &&
-                                  item.unitPrice < lastPurchasePrices[item.product._id] && (
+                                {isBelowCost && (
                                     <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold">
                                       ⚠️ Loss
                                     </span>
@@ -1866,30 +2151,43 @@ export const Sales = ({ tabId, editData }) => {
                             className="h-8 w-8 p-0 flex-shrink-0 ml-2"
                           />
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
+                        <div
+                          className={`grid gap-2 ${
+                            hasDualUnit(item.product) && dualUnitShowBoxInputEnabled
+                              ? 'grid-cols-5'
+                              : 'grid-cols-4'
+                          }`}
+                        >
                           {hasDualUnit(item.product) && dualUnitShowBoxInputEnabled && (
-                            <div>
-                              <label className="block text-xs font-medium text-gray-500 mb-1">Box</label>
+                            <div className="min-w-0">
+                              <label className="block text-[10px] font-medium text-gray-500 mb-1 truncate">Box</label>
                               <LineItemBoxInputCell
                                 product={item.product}
                                 item={item}
                                 onChange={(value) => updateCartBoxCount(item.product._id, value)}
+                                className="px-1 text-xs"
                               />
                             </div>
                           )}
-                          <div>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Stock</label>
+                          <div className="min-w-0">
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1 truncate">Stock</label>
                             <LineItemStockCell
                               currentStock={item.product.inventory?.currentStock}
                               reorderPoint={item.product.inventory?.reorderPoint}
+                              textSize="text-xs"
+                              className="px-1"
                             />
                           </div>
-                          <div>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Total</label>
-                            <LineItemTotalCell value={Math.round(totalPrice)} />
+                          <div className="min-w-0">
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1 truncate">Total</label>
+                            <LineItemTotalCell
+                              value={Math.round(totalPrice)}
+                              textSize="text-xs"
+                              className="px-1"
+                            />
                           </div>
-                          <div>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Quantity</label>
+                          <div className="min-w-0">
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1 truncate">Quantity</label>
                             <DualUnitQuantityInput
                               product={item.product}
                               quantity={item.quantity}
@@ -1901,12 +2199,12 @@ export const Sales = ({ tabId, editData }) => {
                               showPiecesUnitLabel={false}
                               showBoxInput={dualUnitShowBoxInputEnabled && !hasDualUnit(item.product)}
                               showPiecesInput={dualUnitShowPiecesInputEnabled}
-                              inputClassName="w-full min-w-0 text-center h-8 border border-gray-300 rounded px-2"
+                              inputClassName="w-full min-w-0 text-center h-8 border border-gray-300 rounded px-1 text-sm"
                               compact={hasDualUnit(item.product)}
                             />
                           </div>
-                          <div>
-                            <label className="block text-xs font-medium text-gray-500 mb-1">Rate</label>
+                          <div className="min-w-0">
+                            <label className="block text-[10px] font-medium text-gray-500 mb-1 truncate">Rate</label>
                             <Input
                               type="number"
                               step="1"
@@ -1914,8 +2212,7 @@ export const Sales = ({ tabId, editData }) => {
                               value={Math.round(item.unitPrice)}
                               onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
                               onFocus={(e) => e.target.select()}
-                              className={`text-center h-8 w-full ${(lastPurchasePrices[item.product._id] !== undefined &&
-                                item.unitPrice < lastPurchasePrices[item.product._id])
+                              className={`text-center h-8 w-full px-1 text-sm ${isBelowCost
                                 ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
                                 : ''
                                 }`}
@@ -1923,12 +2220,16 @@ export const Sales = ({ tabId, editData }) => {
                             />
                           </div>
                           {showCostPrice && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) && (
-                            <div className="col-span-2">
+                            <div
+                              className={
+                                hasDualUnit(item.product) && dualUnitShowBoxInputEnabled
+                                  ? 'col-span-5'
+                                  : 'col-span-4'
+                              }
+                            >
                               <label className="block text-xs font-medium text-gray-500 mb-1">Cost</label>
                               <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center">
-                                {lastPurchasePrices[item.product._id] !== undefined
-                                  ? `${Math.round(lastPurchasePrices[item.product._id])}`
-                                  : 'N/A'}
+                                {lineDisplayCost ?? 'N/A'}
                               </span>
                             </div>
                           )}
@@ -1936,7 +2237,7 @@ export const Sales = ({ tabId, editData }) => {
                       </div>
 
                       {/* Desktop Table Row */}
-                      <div className={`hidden md:block py-1 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <div className={`hidden lg:block py-1 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                         <div
                           className={`grid gap-x-1 items-center ${dualUnitShowBoxInputEnabled
                             ? (
@@ -1973,16 +2274,12 @@ export const Sales = ({ tabId, editData }) => {
                                     ? (item.product.displayName || item.product.variantName || item.product.name)
                                     : item.product.name}
                                 >
-                                  {item.product.isVariant
-                                    ? (item.product.displayName || item.product.variantName || item.product.name)
-                                    : item.product.name}
+                                  {getProductDisplayName(item.product, 'Product')}
                                 </span>
                                 {isLowStock && <span className="text-yellow-600 text-xs whitespace-nowrap">⚠️ Low Stock</span>}
                                 {/* Warning if sale price is below cost price (only if has permission) */}
-                                {lastPurchasePrices[item.product._id] !== undefined &&
-                                  hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) &&
-                                  item.unitPrice < lastPurchasePrices[item.product._id] && (
-                                    <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold whitespace-nowrap" title={`Sale price below cost! Loss: ${Math.round(lastPurchasePrices[item.product._id] - item.unitPrice)} per unit`}>
+                                {isBelowCost && (
+                                    <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-bold whitespace-nowrap" title={`Sale price below cost! Loss: ${Math.round(lineEffectiveCost - item.unitPrice)} per unit`}>
                                       ⚠️ Loss
                                     </span>
                                   )}
@@ -2042,45 +2339,32 @@ export const Sales = ({ tabId, editData }) => {
                           {showCostPrice && hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) && (
                             <div className="min-w-0">
                               <span className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 block text-center h-8 flex items-center justify-center" title="Cost Price">
-                                {lastPurchasePrices[item.product._id] !== undefined
-                                  ? `${Math.round(lastPurchasePrices[item.product._id])}`
-                                  : item.product.pricing?.cost !== undefined
-                                    ? `${Math.round(item.product.pricing.cost)}`
-                                    : 'N/A'}
+                                {lineDisplayCost ?? 'N/A'}
                               </span>
                             </div>
                           )}
 
                           {/* Rate - 1 column */}
                           <div className="min-w-0 relative">
-                            {(() => {
-                              const effectiveCost = lastPurchasePrices[item.product._id] !== undefined
-                                ? lastPurchasePrices[item.product._id]
-                                : item.product.pricing?.cost;
-                              const isBelowCost = hasPermission(PERMISSIONS.VIEW_PRODUCT_COSTS) && effectiveCost !== undefined && effectiveCost !== null && item.unitPrice < effectiveCost;
-
-                              return (
-                                <Input
-                                  type="number"
-                                  step="1"
-                                  autoComplete="off"
-                                  value={Math.round(item.unitPrice)}
-                                  onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
-                                  onFocus={(e) => e.target.select()}
-                                  className={`text-center h-8 ${
-                                    isBelowCost
-                                      ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
-                                      : priceStatusInputClasses(priceStatus[item.product._id])
-                                    }`}
-                                  min="0"
-                                  title={
-                                    isBelowCost
-                                      ? `⚠️ WARNING: Sale price ($${Math.round(item.unitPrice)}) is below cost price ($${Math.round(effectiveCost)})`
-                                      : ''
-                                  }
-                                />
-                              );
-                            })()}
+                            <Input
+                              type="number"
+                              step="1"
+                              autoComplete="off"
+                              value={Math.round(item.unitPrice)}
+                              onChange={(e) => updateUnitPrice(item.product._id, parseInt(e.target.value) || 0)}
+                              onFocus={(e) => e.target.select()}
+                              className={`text-center h-8 ${
+                                isBelowCost
+                                  ? 'bg-red-50 border-red-400 ring-2 ring-red-300'
+                                  : priceStatusInputClasses(priceStatus[item.product._id])
+                                }`}
+                              min="0"
+                              title={
+                                isBelowCost
+                                  ? `⚠️ WARNING: Sale price ($${Math.round(item.unitPrice)}) is below cost price ($${Math.round(lineEffectiveCost)})`
+                                  : ''
+                              }
+                            />
                             {isLastPricesApplied && (
                               <LineItemPriceStatusIcon status={priceStatus[item.product._id]} />
                             )}
@@ -2170,19 +2454,13 @@ export const Sales = ({ tabId, editData }) => {
                     />
 
                     {/* Bill Date (for backdating) */}
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Bill Date <span className="text-gray-500">(Optional - for backdating)</span>
-                      </label>
-                      <Input
-                        type="date"
-                        autoComplete="off"
-                        value={billDate}
-                        onChange={(e) => setBillDate(e.target.value)}
-                        className="h-10 text-sm w-full"
-                        max={getLocalDateString()} // Prevent future dates
-                      />
-                    </div>
+                    <DateFilter mode="single"
+                      label={<>Bill Date <span className="text-gray-500 font-normal">(Optional - for backdating)</span></>}
+                      value={billDate}
+                      onChange={setBillDate}
+                      size="sm"
+                      placeholder="Today"
+                    />
 
                     <OrderNotesField
                       value={notes}
@@ -2234,17 +2512,13 @@ export const Sales = ({ tabId, editData }) => {
                     />
 
                     {/* Bill Date (for backdating) - Desktop */}
-                    <div className="flex flex-col w-44">
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Bill Date <span className="text-gray-500">(Optional)</span>
-                      </label>
-                      <Input
-                        type="date"
-                        autoComplete="off"
+                    <div className="w-44">
+                      <DateFilter mode="single"
+                        label={<>Bill Date <span className="text-gray-500 font-normal">(Optional)</span></>}
                         value={billDate}
-                        onChange={(e) => setBillDate(e.target.value)}
-                        className="h-8 text-sm"
-                        max={getLocalDateString()} // Prevent future dates
+                        onChange={setBillDate}
+                        size="sm"
+                        placeholder="Today"
                       />
                     </div>
 
@@ -2289,105 +2563,46 @@ export const Sales = ({ tabId, editData }) => {
                       </LoadingButton>
                     )}
                     {cart.length > 0 && (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            className="h-8 w-8 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                            title="Print Options"
-                          >
-                            <Printer className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => {
-                              let customerAddress = '';
-                              if (selectedCustomer?.addresses?.length) {
-                                const addr = selectedCustomer.addresses.find(a => a.isDefault) || selectedCustomer.addresses.find(a => a.type === 'billing' || a.type === 'both') || selectedCustomer.addresses[0];
-                                if (addr) customerAddress = [addr.street, addr.city, addr.state, addr.country, addr.zipCode || addr.zip].filter(Boolean).join(', ');
-                              } else if (selectedCustomer?.address) customerAddress = selectedCustomer.address;
-                              const tempOrder = {
-                                orderNumber: `TEMP-${Date.now()}`,
-                                orderType: resolvedOrderTypeForSave(),
-                                customer: selectedCustomer ?? undefined,
-                                customerInfo: selectedCustomer ? {
-                                  name: selectedCustomer.businessName || selectedCustomer.business_name || selectedCustomer.displayName || selectedCustomer.name,
-                                  email: selectedCustomer.email,
-                                  phone: selectedCustomer.phone,
-                                  businessName: selectedCustomer.businessName || selectedCustomer.business_name,
-                                  address: customerAddress || undefined,
-                                  currentBalance: selectedCustomer.currentBalance,
-                                  pendingBalance: selectedCustomer.pendingBalance,
-                                  advanceBalance: selectedCustomer.advanceBalance
-                                } : null,
-                                items: mapCartItemsForInvoicePrint(cart),
-                                pricing: { subtotal, discountAmount: totalDiscountAmount, taxAmount: tax, isTaxExempt: !taxSystemEnabled, total },
-                                payment: {
-                                  method: paymentMethod,
-                                  bankAccount: paymentMethod === 'bank' ? selectedBankAccount : null,
-                                  amountPaid,
-                                  remainingBalance: total - amountPaid,
-                                  isPartialPayment: amountPaid < total,
-                                  isAdvancePayment,
-                                  advanceAmount: isAdvancePayment ? (amountPaid - total) : 0
-                                },
-                                createdAt: new Date(),
-                                createdBy: user ? { firstName: user.firstName, lastName: user.lastName, name: user.displayName || `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'Admin' } : { name: 'Admin' },
-                                invoiceNumber
-                              };
-                              setDirectPrintOrder(tempOrder);
-                            }}
-                          >
-                            <Printer className="h-4 w-4 mr-2" />
-                            Print
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => {
-                              let customerAddress = '';
-                              if (selectedCustomer?.addresses?.length) {
-                                const addr = selectedCustomer.addresses.find(a => a.isDefault) || selectedCustomer.addresses.find(a => a.type === 'billing' || a.type === 'both') || selectedCustomer.addresses[0];
-                                if (addr) customerAddress = [addr.street, addr.city, addr.state, addr.country, addr.zipCode || addr.zip].filter(Boolean).join(', ');
-                              } else if (selectedCustomer?.address) customerAddress = selectedCustomer.address;
-                              const tempOrder = {
-                                orderNumber: `TEMP-${Date.now()}`,
-                                orderType: resolvedOrderTypeForSave(),
-                                customer: selectedCustomer ?? undefined,
-                                customerInfo: selectedCustomer ? {
-                                  name: selectedCustomer.businessName || selectedCustomer.business_name || selectedCustomer.displayName || selectedCustomer.name,
-                                  email: selectedCustomer.email,
-                                  phone: selectedCustomer.phone,
-                                  businessName: selectedCustomer.businessName || selectedCustomer.business_name,
-                                  address: customerAddress || undefined,
-                                  currentBalance: selectedCustomer.currentBalance,
-                                  pendingBalance: selectedCustomer.pendingBalance,
-                                  advanceBalance: selectedCustomer.advanceBalance
-                                } : null,
-                                items: mapCartItemsForInvoicePrint(cart),
-                                pricing: { subtotal, discountAmount: totalDiscountAmount, taxAmount: tax, isTaxExempt: !taxSystemEnabled, total },
-                                payment: {
-                                  method: paymentMethod,
-                                  bankAccount: paymentMethod === 'bank' ? selectedBankAccount : null,
-                                  amountPaid,
-                                  remainingBalance: total - amountPaid,
-                                  isPartialPayment: amountPaid < total,
-                                  isAdvancePayment,
-                                  advanceAmount: isAdvancePayment ? (amountPaid - total) : 0
-                                },
-                                createdAt: new Date(),
-                                createdBy: user ? { firstName: user.firstName, lastName: user.lastName, name: user.displayName || `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'Admin' } : { name: 'Admin' },
-                                invoiceNumber
-                              };
-                              setCurrentOrder(tempOrder);
-                              setShowPrintModal(true);
-                            }}
-                          >
-                            <Eye className="h-4 w-4 mr-2" />
-                            Print Preview
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <div className="flex items-center gap-1">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              className="h-8 w-8 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                              title="Print Options"
+                            >
+                              <Printer className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onClick={() => setDirectPrintOrder(buildSalesCartOrder())}
+                            >
+                              <Printer className="h-4 w-4 mr-2" />
+                              Print
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => {
+                                setCurrentOrder(buildSalesCartOrder());
+                                setShowPrintModal(true);
+                              }}
+                            >
+                              <Eye className="h-4 w-4 mr-2" />
+                              Print Preview
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                        <WhatsAppShareButton
+                          orderData={buildSalesCartOrder()}
+                          documentTitle="Sales Invoice"
+                          partyLabel="Customer"
+                          requireSaved={!activeEditData?.orderId}
+                          showLabel={false}
+                          size="sm"
+                          className="h-8 w-8 border-none shadow-none bg-transparent hover:bg-green-50"
+                        />
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2407,19 +2622,7 @@ export const Sales = ({ tabId, editData }) => {
                     </div>
                   )}
                   {selectedCustomer && (() => {
-                    // Match Print logic: invoiceBalance = net amount - received; previousBalance = ledger - invoiceBalance; totalReceivables = ledger
-                    const ledgerBalance = selectedCustomer.currentBalance !== undefined && selectedCustomer.currentBalance !== null
-                      ? Number(selectedCustomer.currentBalance)
-                      : ((selectedCustomer.pendingBalance || 0) - (selectedCustomer.advanceBalance || 0));
-                    const receivedAmount = amountPaid || 0;
-                    const invoiceBalance = total - receivedAmount;
-                    // In edit mode, ledger already includes this invoice; in new sale, it does not
-                    const previousBalance = activeEditData?.isEditMode
-                      ? ledgerBalance - invoiceBalance
-                      : ledgerBalance;
-                    const totalReceivables = activeEditData?.isEditMode
-                      ? ledgerBalance
-                      : ledgerBalance + invoiceBalance;
+                    const { previousBalance, totalReceivables } = checkoutPartyBalances;
 
                     return (
                       <div className="mt-2">
@@ -2513,7 +2716,7 @@ export const Sales = ({ tabId, editData }) => {
                             />
                           </div>
 
-                          {/* 6. Total Receivables */}
+                          {/* 6. Total Receivables — same formula as invoice print Remaining Balance */}
                           <div className="flex flex-col">
                             <span className={`text-[10px] uppercase tracking-wider font-bold mb-1 ${totalReceivables < 0 ? 'text-red-700' : 'text-green-700'}`}>
                               Receivables
@@ -2625,13 +2828,41 @@ export const Sales = ({ tabId, editData }) => {
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setCogsProfitModalTab('cogs');
+                      setIsCOGSProfitModalOpen(true);
+                    }}
+                    className="border-gray-200 text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 h-9 text-xs sm:text-sm font-semibold shadow-sm rounded-lg"
+                  >
+                    <TrendingUp className="h-4 w-4 text-emerald-600" />
+                    <span>Show COGS</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setCogsProfitModalTab('profit');
+                      setIsCOGSProfitModalOpen(true);
+                    }}
+                    className="border-gray-200 text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 h-9 text-xs sm:text-sm font-semibold shadow-sm rounded-lg"
+                  >
+                    <TrendingUp className="h-4 w-4 text-blue-600" />
+                    <span>Show Profit</span>
+                  </Button>
                   <button
                     type="button"
                     onClick={() => refetchSavedInvoices()}
                     className="p-2 text-gray-400 transition-colors hover:text-gray-600 hover:bg-gray-100 rounded-full"
                     title="Refresh"
                   >
-                    <RefreshCw className={`h-4 w-4 ${isSavedInvoicesLoading ? 'animate-spin' : ''}`} />
+                    {isSavedInvoicesLoading ? (
+                      <LoadingSpinner size="sm" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
                   </button>
                 </div>
               </div>
@@ -2756,12 +2987,11 @@ export const Sales = ({ tabId, editData }) => {
           <div className="card-content p-0">
             {isSavedInvoicesLoading ? (
               <div className="p-8 text-center">
-                <RefreshCw className="h-8 w-8 animate-spin mx-auto text-gray-400" />
-                <p className="mt-2 text-gray-500">Loading sales invoices...</p>
+                <LoadingInline message="Loading sales invoices..." />
               </div>
             ) : savedInvoicesError ? (
               <div className="p-8 text-center text-red-600">
-                <p>{handleApiError(savedInvoicesError).message || 'Error loading sales invoices'}</p>
+                <p>{getErrorMessage(savedInvoicesError) || 'Error loading sales invoices'}</p>
               </div>
             ) : savedInvoices.length === 0 ? (
               <div className="p-8 text-center text-gray-500">
@@ -2769,7 +2999,7 @@ export const Sales = ({ tabId, editData }) => {
               </div>
             ) : (
               <>
-                <div className="overflow-x-auto">
+                <div className="table-scroll">
                   <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                       <tr>
@@ -2815,14 +3045,7 @@ export const Sales = ({ tabId, editData }) => {
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(totalValue)}</td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                              <div className="flex items-center gap-1">
-                                <button
-                                  onClick={() => openSavedInvoicePrintPreview(invoice)}
-                                  className="text-blue-600 hover:text-blue-900"
-                                  title="View"
-                                >
-                                  <Eye className="h-4 w-4" />
-                                </button>
+                              <div className="flex items-center gap-3">
                                 <button
                                   onClick={() => openSavedInvoicePrintPreview(invoice)}
                                   className="text-green-600 hover:text-green-900"
@@ -2830,6 +3053,15 @@ export const Sales = ({ tabId, editData }) => {
                                 >
                                   <Printer className="h-4 w-4" />
                                 </button>
+                                <WhatsAppShareButton
+                                  getOrderData={() => fetchFreshSavedInvoice(invoice)}
+                                  documentTitle="Sales Invoice"
+                                  partyLabel="Customer"
+                                  requireSaved
+                                  showLabel={false}
+                                  size="sm"
+                                  className="border-none shadow-none bg-transparent hover:bg-green-50 p-0 h-auto w-auto"
+                                />
                                 <ExcelExportButton
                                   getData={async () => {
                                     const printPerms = getPartyPermissions('customer');
@@ -2865,13 +3097,32 @@ export const Sales = ({ tabId, editData }) => {
                                   label=""
                                   className="p-1 bg-transparent border-none shadow-none hover:bg-transparent text-red-600 hover:text-red-800 px-1 py-1"
                                 />
-                                <button
-                                  onClick={() => handleEditSavedInvoice(invoice)}
-                                  className="text-blue-600 hover:text-blue-800"
-                                  title="Edit"
-                                >
-                                  <Edit className="h-4 w-4" />
-                                </button>
+                                {(() => {
+                                  const isEditable = (() => {
+                                    if (!invoiceDate) return true;
+                                    const invD = new Date(invoiceDate);
+                                    const sixMonthsAgo = new Date();
+                                    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+                                    sixMonthsAgo.setHours(0, 0, 0, 0);
+                                    invD.setHours(0, 0, 0, 0);
+                                    return invD >= sixMonthsAgo;
+                                  })();
+                                  return (
+                                    <button
+                                      onClick={() => {
+                                        if (isEditable) {
+                                          handleEditSavedInvoice(invoice);
+                                        } else {
+                                          toast.error("Cannot edit sales invoice older than 6 months.");
+                                        }
+                                      }}
+                                      className={isEditable ? "text-blue-600 hover:text-blue-800" : "text-gray-300 cursor-not-allowed"}
+                                      title={isEditable ? "Edit" : "Edit disabled (older than 6 months)"}
+                                    >
+                                      <Edit className="h-4 w-4" />
+                                    </button>
+                                  );
+                                })()}
                                 <button
                                   onClick={() => setInvoiceDeleteTarget(invoice)}
                                   className="text-red-600 hover:text-red-900"
@@ -2898,7 +3149,7 @@ export const Sales = ({ tabId, editData }) => {
             )}
           </div>
         </div>
-      </div>
+      </PageLayout>
 
       {/* Clear Cart Confirmation Dialog */}
       <ClearConfirmationDialog
@@ -3014,6 +3265,19 @@ export const Sales = ({ tabId, editData }) => {
         documentTitle="Sales Invoice"
         partyLabel="Customer"
       />
+
+      {isCOGSProfitModalOpen && (
+        <COGSProfitReportModal
+          isOpen={isCOGSProfitModalOpen}
+          onClose={() => setIsCOGSProfitModalOpen(false)}
+          initialTab={cogsProfitModalTab}
+          initialFilters={{
+            dateFrom: savedInvoiceFromDate,
+            dateTo: savedInvoiceToDate,
+            search: savedInvoiceSearchTerm,
+          }}
+        />
+      )}
 
       <ProductImagePreviewModal
         product={previewImageProduct}

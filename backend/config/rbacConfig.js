@@ -21,6 +21,8 @@ const PERMISSIONS = {
   VIEW_SALES: 'view_sales',
   MANAGE_SALES: 'manage_sales',
   VIEW_SALES_ORDERS: 'view_sales_orders',
+  CONFIRM_SALES_ORDERS: 'confirm_sales_orders',
+  CANCEL_SALES_ORDERS: 'cancel_sales_orders',
   
   // Products
   VIEW_PRODUCTS: 'view_products',
@@ -44,6 +46,30 @@ const PERMISSIONS = {
   // Settings & Admin
   MANAGE_USERS: 'manage_users',
   MANAGE_SETTINGS: 'manage_settings',
+  MANAGE_PRINT_SETTINGS: 'manage_print_settings',
+  MANAGE_PRODUCT_SETTINGS: 'manage_product_settings',
+  MANAGE_CUSTOMER_SETTINGS: 'manage_customer_settings',
+  MANAGE_SUPPLIER_SETTINGS: 'manage_supplier_settings',
+  MANAGE_ADVANCED_SETTINGS: 'manage_advanced_settings',
+
+  // Settings sub-features (Print)
+  SETTINGS_PRINT_LAYOUT: 'settings_print_layout',
+  SETTINGS_PRINT_LOGO_HEADER: 'settings_print_logo_header',
+  SETTINGS_PRINT_PARTY_DETAILS: 'settings_print_party_details',
+  SETTINGS_PRINT_INVOICE_META: 'settings_print_invoice_meta',
+  SETTINGS_PRINT_FINANCIALS: 'settings_print_financials',
+  SETTINGS_PRINT_BEHAVIOR: 'settings_print_behavior',
+  // Settings sub-features (Products)
+  SETTINGS_PRODUCT_IMAGES: 'settings_product_images',
+  SETTINGS_PRODUCT_FIELDS: 'settings_product_fields',
+  // Settings sub-features (Customers)
+  SETTINGS_CUSTOMER_FIELDS: 'settings_customer_fields',
+  // Settings sub-features (Suppliers)
+  SETTINGS_SUPPLIER_FIELDS: 'settings_supplier_fields',
+  // Settings sub-features (Advanced)
+  SETTINGS_ADVANCED_DISPLAY: 'settings_advanced_display',
+  SETTINGS_ADVANCED_FEATURES: 'settings_advanced_features',
+  SETTINGS_ADVANCED_SECURITY: 'settings_advanced_security',
   
   // Inventory
   VIEW_INVENTORY: 'view_inventory',
@@ -107,7 +133,25 @@ const ROLE_PERMISSIONS = {
     'view_stock_movements',
     'view_inventory_levels',
     PERMISSIONS.VIEW_REPORTS,
-    'view_help'
+    PERMISSIONS.MANAGE_PRINT_SETTINGS,
+    PERMISSIONS.MANAGE_PRODUCT_SETTINGS,
+    PERMISSIONS.MANAGE_CUSTOMER_SETTINGS,
+    PERMISSIONS.MANAGE_SUPPLIER_SETTINGS,
+    PERMISSIONS.MANAGE_ADVANCED_SETTINGS,
+    PERMISSIONS.SETTINGS_PRINT_LAYOUT,
+    PERMISSIONS.SETTINGS_PRINT_LOGO_HEADER,
+    PERMISSIONS.SETTINGS_PRINT_PARTY_DETAILS,
+    PERMISSIONS.SETTINGS_PRINT_INVOICE_META,
+    PERMISSIONS.SETTINGS_PRINT_FINANCIALS,
+    PERMISSIONS.SETTINGS_PRINT_BEHAVIOR,
+    PERMISSIONS.SETTINGS_PRODUCT_IMAGES,
+    PERMISSIONS.SETTINGS_PRODUCT_FIELDS,
+    PERMISSIONS.SETTINGS_CUSTOMER_FIELDS,
+    PERMISSIONS.SETTINGS_SUPPLIER_FIELDS,
+    PERMISSIONS.SETTINGS_ADVANCED_DISPLAY,
+    PERMISSIONS.SETTINGS_ADVANCED_FEATURES,
+    PERMISSIONS.SETTINGS_ADVANCED_SECURITY,
+    'view_help',
   ],
   
   [ROLES.CASHIER]: [
@@ -124,6 +168,10 @@ const ROLE_PERMISSIONS = {
     PERMISSIONS.VIEW_PRODUCTS,
     PERMISSIONS.VIEW_INVENTORY,
     'view_inventory_levels',
+    'view_cash_receipts',
+    'create_cash_receipts',
+    'view_cash_payments',
+    'create_cash_payments',
     'view_help'
   ],
   

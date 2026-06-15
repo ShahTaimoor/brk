@@ -154,14 +154,23 @@ class ReturnManagementService {
     // This prevents zero-value returns when frontend sends mismatched field names.
     if (isPurchaseReturn) {
       for (const item of returnRequest.items) {
-        const orderItem = originalOrder.items?.find(oi =>
+        let orderItem = originalOrder.items?.find(oi =>
           String(oi._id || oi.id) === String(item.originalOrderItem)
         );
+        // Fallback: match by product ID
+        if (!orderItem && item.product) {
+          const retProductId = String(item.product?._id || item.product?.id || item.product);
+          orderItem = originalOrder.items?.find(oi => {
+            const oiPid = String(oi.product?._id || oi.product?.id || oi.product);
+            return oiPid === retProductId;
+          });
+        }
         if (!orderItem) continue;
         const productId = orderItem?.product && (orderItem.product.id || orderItem.product._id);
         const product = productId ? await ProductRepository.findById(productId) : null;
         const derivedUnitCost = this.extractCostBasis(orderItem, product);
         item.originalPrice = derivedUnitCost;
+        item.unitCost = derivedUnitCost;
       }
     }
 
@@ -185,6 +194,8 @@ class ReturnManagementService {
       originalOrderItem: item.originalOrderItem ? String(item.originalOrderItem) : null,
       quantity: item.quantity,
       originalPrice: item.originalPrice,
+      unitCost: item.unitCost || 0,
+      unit_cost: item.unitCost || 0,
       returnReason: item.returnReason,
       returnReasonDetail: item.returnReasonDetail,
       condition: item.condition,
@@ -411,9 +422,18 @@ class ReturnManagementService {
   // Validate return items
   async validateReturnItems(originalOrder, returnItems) {
     for (const returnItem of returnItems) {
-      const orderItem = originalOrder.items.find(item =>
+      let orderItem = originalOrder.items.find(item =>
         String(item._id || item.id) === String(returnItem.originalOrderItem)
       );
+
+      // Fallback: match by product ID if no match by originalOrderItem ID
+      if (!orderItem && returnItem.product) {
+        const retProductId = String(returnItem.product?._id || returnItem.product?.id || returnItem.product);
+        orderItem = originalOrder.items.find(oi => {
+          const oiPid = String(oi.product?._id || oi.product?.id || oi.product);
+          return oiPid === retProductId;
+        });
+      }
 
       if (!orderItem) {
         throw new Error(`Order item not found: ${returnItem.originalOrderItem}`);
@@ -429,6 +449,9 @@ class ReturnManagementService {
       // Sales/Orders use unitPrice, legacy might use price
       returnItem.originalPrice = Number(orderItem.unitPrice || orderItem.price) || 0;
       console.log(`Set originalPrice for item ${returnItem.product}: ${returnItem.originalPrice}`);
+
+      // Extract and set unitCost (COGS cost basis) for the return item so it's stored in Postgres items
+      returnItem.unitCost = this.extractCostBasis(orderItem, product);
 
       // Always set default values for optional fields (override any frontend value)
       // Handle string "undefined" or actual undefined values
@@ -658,7 +681,19 @@ class ReturnManagementService {
       const currentStock = Number(inventory.current_stock ?? inventory.currentStock ?? 0);
 
       if (isPurchaseReturn) {
-        if (currentStock < item.quantity) {
+        const settingsService = require('./settingsService');
+        const { isWarehouseInventoryEnabled } = require('../utils/warehouseInventory');
+        const companySettings = await settingsService.getCompanySettings();
+        if (isWarehouseInventoryEnabled(companySettings)) {
+          const warehouseStockRepository = require('../repositories/WarehouseStockRepository');
+          const locationStockService = require('./locationStockService');
+          const warehouse = await locationStockService.resolvePrimaryWarehouse(client);
+          const whRow = await warehouseStockRepository.findByWarehouseAndProduct(warehouse.id, productId, client);
+          const whQty = Number(whRow?.quantity ?? 0);
+          if (whQty < item.quantity) {
+            throw new Error(`Insufficient warehouse stock for product ${item.product?.name || productId}. Available: ${whQty}, Required: ${item.quantity}`);
+          }
+        } else if (currentStock < item.quantity) {
           throw new Error(`Insufficient stock for product ${item.product?.name || productId}. Available: ${currentStock}, Required: ${item.quantity}`);
         }
         await this.logInventoryMovement(
@@ -702,6 +737,41 @@ class ReturnManagementService {
       console.warn('logInventoryMovement: skipping item with no product id', item);
       return;
     }
+
+    const settingsService = require('./settingsService');
+    const { isWarehouseInventoryEnabled } = require('../utils/warehouseInventory');
+    const companySettings = await settingsService.getCompanySettings();
+    const qty = Math.abs(quantity);
+
+    if (isWarehouseInventoryEnabled(companySettings)) {
+      const locationStockService = require('./locationStockService');
+
+      if (type === 'out') {
+        await locationStockService.issueFromWarehouse({
+          productId,
+          quantity: qty,
+          reason: 'Purchase return',
+          referenceId: returnId,
+          referenceNumber: reference,
+          performedBy: userId,
+          notes: options.notes || 'Stock reduced for purchase return',
+        }, { client });
+        return;
+      }
+
+      if (type === 'return' && options.resellable !== false) {
+        await locationStockService.restoreToShop({
+          productId,
+          quantity: qty,
+          reason: 'Sale return',
+          referenceId: returnId,
+          referenceNumber: reference,
+          performedBy: userId,
+          notes: options.notes || 'Stock restored for sale return',
+        }, { client });
+        return;
+      }
+    }
     let inventory = await InventoryRepository.findOne({ product: productId, productId }, client);
     if (!inventory) {
       inventory = await InventoryRepository.create({
@@ -714,7 +784,6 @@ class ReturnManagementService {
       }, client);
     }
 
-    const qty = Math.abs(quantity);
     const currentStock = Number(inventory.current_stock ?? inventory.currentStock ?? 0);
 
     let movementType;
@@ -897,6 +966,18 @@ class ReturnManagementService {
           },
           client
         );
+        const dailyCashService = require('./dailyCashService');
+        const tillUserId = toUuid(
+          returnRequest.processed_by ?? returnRequest.processedBy ??
+          returnRequest.created_by ?? returnRequest.createdBy
+        );
+        if (tillUserId) {
+          await dailyCashService.recordRefund(tillUserId, {
+            returnId: returnRequest.id || returnRequest._id,
+            returnNumber: returnRequest.return_number || returnRequest.returnNumber,
+            amount: amt,
+          }, client);
+        }
       } else if (amt > 0 && (refundMethod === 'bank_transfer' || refundMethod === 'check')) {
         await this.createDoubleEntry(
           {
@@ -1121,9 +1202,19 @@ class ReturnManagementService {
     let totalCOGS = 0;
 
     for (const returnItem of returnRequest.items) {
-      const originalItem = originalSale.items.find(oi =>
-        oi._id.toString() === returnItem.originalOrderItem.toString()
+      // Find original sale item using safe string matching
+      let originalItem = originalSale.items.find(oi =>
+        String(oi._id || oi.id) === String(returnItem.originalOrderItem)
       );
+
+      // Fallback: match by product ID if ID match fails
+      if (!originalItem && returnItem.product) {
+        const retProductId = String(returnItem.product?._id || returnItem.product?.id || returnItem.product);
+        originalItem = originalSale.items.find(oi => {
+          const oiPid = String(oi.product?._id || oi.product?.id || oi.product);
+          return oiPid === retProductId;
+        });
+      }
 
       if (originalItem) {
         // Fetch product to use as fallback for cost basis extraction
@@ -1134,6 +1225,8 @@ class ReturnManagementService {
         // Extract cost basis using consistent logic (avoids falling back to selling price)
         const unitCost = this.extractCostBasis(originalItem, product);
         totalCOGS += unitCost * returnItem.quantity;
+      } else {
+        console.warn(`calculateCOGSAdjustment: could not find original item for originalOrderItem=${returnItem.originalOrderItem}`);
       }
     }
 
@@ -1145,9 +1238,19 @@ class ReturnManagementService {
     let totalCOGS = 0;
 
     for (const returnItem of returnRequest.items) {
-      const originalItem = originalInvoice.items.find(oi =>
-        oi._id.toString() === returnItem.originalOrderItem.toString()
+      // Find original invoice item using safe string matching
+      let originalItem = originalInvoice.items.find(oi =>
+        String(oi._id || oi.id) === String(returnItem.originalOrderItem)
       );
+
+      // Fallback: match by product ID if ID match fails
+      if (!originalItem && returnItem.product) {
+        const retProductId = String(returnItem.product?._id || returnItem.product?.id || returnItem.product);
+        originalItem = originalInvoice.items.find(oi => {
+          const oiPid = String(oi.product?._id || oi.product?.id || oi.product);
+          return oiPid === retProductId;
+        });
+      }
 
       if (originalItem) {
         // Fetch product to use as fallback for cost basis extraction
@@ -1158,6 +1261,8 @@ class ReturnManagementService {
         // Extract cost basis using consistent logic (avoids falling back to selling price)
         const unitCost = this.extractCostBasis(originalItem, product);
         totalCOGS += unitCost * returnItem.quantity;
+      } else {
+        console.warn(`calculatePurchaseCOGSAdjustment: could not find original item for originalOrderItem=${returnItem.originalOrderItem}`);
       }
     }
 
@@ -1586,6 +1691,12 @@ class ReturnManagementService {
           { ...payment, customer_id: customerId, customerId },
           client
         );
+        const dailyCashService = require('./dailyCashService');
+        await dailyCashService.recordRefund(userId, {
+          returnId,
+          returnNumber,
+          amount: refundAmount,
+        }, client);
       } else if (method === 'bank_transfer' || method === 'check') {
         const bankPaymentData = {
           date: date ? new Date(date) : new Date(),

@@ -4,6 +4,7 @@ import { FileText, Search, TrendingDown, RefreshCw } from 'lucide-react';
 import DateFilter from '../components/DateFilter';
 import { LoadingSpinner } from '../components/LoadingSpinner';
 import PageShell from '../components/PageShell';
+import { PageHeader } from '../components/layout/PageHeader';
 import { balanceSheetsApi, useGetLatestBalanceSheetQuery } from '../store/services/balanceSheetsApi';
 import { formatCurrency } from '../utils/formatters';
 import { getCurrentDatePakistan, getStartOfMonth, formatDatePakistan } from '../utils/dateUtils';
@@ -147,24 +148,12 @@ export const BalanceSheetStatement = () => {
 
   return (
     <PageShell className="bg-gray-100" maxWidthClassName="max-w-6xl" contentClassName="p-4 sm:p-6 lg:p-8">
-      {/* Header */}
-      <header className="mb-6">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white">
-              <FileText className="h-6 w-6 text-gray-700" />
-            </div>
-            <div>
-              <h1 className="text-xl sm:text-2xl font-bold text-gray-900 tracking-tight">
-                Balance Sheet
-              </h1>
-              <p className="text-sm text-gray-500 mt-0.5">
-                Financial position for selected period
-              </p>
-            </div>
-          </div>
-        </div>
-      </header>
+      <PageHeader
+        title="Balance Sheet"
+        subtitle="Financial position for selected period"
+        icon={FileText}
+        className="mb-6"
+      />
 
       {/* Date filter and Generate */}
       <section className="bg-white border border-gray-200 rounded-lg shadow-sm mb-6 overflow-hidden no-print">
@@ -182,7 +171,11 @@ export const BalanceSheetStatement = () => {
             title={showData ? 'Reload balance sheet for this period' : 'Generate a report first'}
             className="inline-flex items-center justify-center gap-2 self-start sm:self-auto shrink-0 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white transition-colors"
           >
-            <RefreshCw className={`h-4 w-4 ${isFetching && showData ? 'animate-spin' : ''}`} aria-hidden />
+            {(isFetching && showData) ? (
+              <LoadingSpinner size="sm" aria-hidden />
+            ) : (
+              <RefreshCw className="h-4 w-4" aria-hidden />
+            )}
             Refresh
           </button>
         </div>
@@ -254,7 +247,7 @@ export const BalanceSheetStatement = () => {
 
       {/* Report Content */}
       {!isButtonLoading && !error && showData && balanceSheet && (
-        <div id="balance-sheet-content" className="space-y-6">
+        <div id="balance-sheet-content" className="page-container">
           {/* Summary Cards */}
           <section>
             <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">
@@ -289,7 +282,7 @@ export const BalanceSheetStatement = () => {
           </section>
 
           {/* Statement Tables */}
-          <section className="space-y-6">
+          <section className="page-container">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
               <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden flex flex-col">
                 <div className="px-4 py-4 sm:px-6 border-b border-gray-200">

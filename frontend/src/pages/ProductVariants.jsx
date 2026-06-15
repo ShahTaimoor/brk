@@ -15,15 +15,16 @@ import {
   useUpdateVariantMutation,
   useDeleteVariantMutation,
 } from '../store/services/productVariantsApi';
-import { useGetProductsQuery } from '../store/services/productsApi';
+import { useGetProductQuery } from '../store/services/productsApi';
 import { ProductSearchableSelect } from '../components/ProductSearchableSelect';
 import { handleApiError, showSuccessToast, showErrorToast } from '../utils/errorHandler';
-import { LoadingSpinner, LoadingButton } from '../components/LoadingSpinner';
+import { LoadingSpinner, LoadingButton, LoadingTable } from '../components/LoadingSpinner';
 import { Button } from '@/components/ui/button';
 import { DeleteConfirmationDialog } from '../components/ConfirmationDialog';
 import { useDeleteConfirmation } from '../hooks/useConfirmation';
 import ValidatedInput, { ValidatedSelect } from '../components/ValidatedInput';
 import { PageHeader } from '../components/layout/PageHeader';
+import { PageLayout } from '../components/layout/PageLayout';
 import { useFormValidation } from '../hooks/useFormValidation';
 
 const ProductVariants = () => {
@@ -40,25 +41,12 @@ const ProductVariants = () => {
     search: searchTerm || undefined
   });
 
-  // Full catalog for pickers (API default limit is 20 without explicit limit)
-  const { data: productsData, isLoading: productsLoading } = useGetProductsQuery(
-    {
-      limit: 10000,
-      listMode: 'minimal',
-    },
-    { refetchOnMountOrArgChange: true }
-  );
-
   const variants = variantsData?.variants || variantsData?.data?.variants || [];
-  const products = productsData?.products || productsData?.data?.products || [];
 
   const getBaseProductName = (variant) => {
-    const baseProductId = variant.baseProduct?._id ?? variant.baseProduct ?? variant.base_product_id ?? variant.baseProductId;
-    if (!baseProductId) return null;
-    const product = products.find(
-      (p) => String(p._id ?? p.id) === String(baseProductId)
-    );
-    return product?.name ?? product?.productName ?? null;
+    if (variant.baseProduct?.name) return variant.baseProduct.name;
+    if (variant.baseProduct?.productName) return variant.baseProduct.productName;
+    return null;
   };
 
   // Normalize variant fields (backend returns snake_case from Postgres)
@@ -111,9 +99,8 @@ const ProductVariants = () => {
   ];
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8">
+    <PageLayout>
       <PageHeader
-        className="mb-6"
         title="Product Variants"
         subtitle="Manage product variants and transformations"
         actions={
@@ -144,10 +131,8 @@ const ProductVariants = () => {
           </div>
           <ProductSearchableSelect
             placeholder="All products — search to filter by base"
-            products={products}
             value={selectedBaseProduct}
             onValueChange={setSelectedBaseProduct}
-            loading={productsLoading}
             allowClear
             className="w-full"
           />
@@ -162,7 +147,7 @@ const ProductVariants = () => {
 
       {/* Variants Table */}
       {variantsLoading ? (
-        <LoadingSpinner />
+        <LoadingTable rows={6} columns={5} />
       ) : variants.length === 0 ? (
         <div className="bg-white rounded-lg shadow p-8 sm:p-12 text-center">
           <Package className="h-12 w-12 text-gray-400 mx-auto mb-4" />
@@ -178,7 +163,7 @@ const ProductVariants = () => {
         </div>
       ) : (
         <div className="bg-white rounded-lg shadow overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="table-scroll">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
@@ -258,8 +243,6 @@ const ProductVariants = () => {
       {isModalOpen && (
         <VariantModal
           variant={editingVariant}
-          products={products}
-          productsLoading={productsLoading}
           isOpen={isModalOpen}
           onClose={handleCloseModal}
           onSuccess={() => {
@@ -276,12 +259,12 @@ const ProductVariants = () => {
         itemName={itemToDelete?.name || ''}
         itemType="variant"
       />
-    </div>
+    </PageLayout>
   );
 };
 
 // Variant Modal Component
-const VariantModal = ({ variant, products, productsLoading, isOpen, onClose, onSuccess }) => {
+const VariantModal = ({ variant, isOpen, onClose, onSuccess }) => {
   const [createVariant, { isLoading: isCreating }] = useCreateVariantMutation();
   const [updateVariant, { isLoading: isUpdating }] = useUpdateVariantMutation();
   const [formData, setFormData] = useState({
@@ -301,6 +284,14 @@ const VariantModal = ({ variant, products, productsLoading, isOpen, onClose, onS
     sku: '',
     status: 'active'
   });
+
+  const { data: baseProductResponse } = useGetProductQuery(formData.baseProduct, {
+    skip: !formData.baseProduct,
+  });
+  const baseProduct = React.useMemo(() => {
+    const data = baseProductResponse;
+    return data?.data?.product ?? data?.product ?? data?.data ?? data ?? null;
+  }, [baseProductResponse]);
 
   React.useEffect(() => {
     if (variant) {
@@ -348,38 +339,29 @@ const VariantModal = ({ variant, products, productsLoading, isOpen, onClose, onS
   }, [formData.variantValue, variant]);
 
   React.useEffect(() => {
-    if (formData.baseProduct && formData.variantValue) {
-      const baseProduct = products.find(
-        (p) => String(p._id ?? p.id) === String(formData.baseProduct)
-      );
-      if (baseProduct && !variant) {
-        setFormData(prev => ({
-          ...prev,
-          displayName: `${baseProduct.name} - ${formData.variantValue}`
-        }));
-      }
+    if (formData.baseProduct && formData.variantValue && baseProduct && !variant) {
+      setFormData(prev => ({
+        ...prev,
+        displayName: `${baseProduct.name} - ${formData.variantValue}`
+      }));
     }
-  }, [formData.baseProduct, formData.variantValue, products, variant]);
+  }, [formData.baseProduct, formData.variantValue, baseProduct, variant]);
 
   // Auto-calculate pricing based on base product
   React.useEffect(() => {
-    if (formData.baseProduct && !variant) {
-      const baseProduct = products.find(
-        (p) => String(p._id ?? p.id) === String(formData.baseProduct)
-      );
-      if (baseProduct) {
-        setFormData(prev => ({
-          ...prev,
-          pricing: {
-            cost: baseProduct.pricing.cost + prev.transformationCost,
-            retail: baseProduct.pricing.retail + prev.transformationCost,
-            wholesale: baseProduct.pricing.wholesale + prev.transformationCost,
-            distributor: baseProduct.pricing.distributor ? baseProduct.pricing.distributor + prev.transformationCost : 0
-          }
-        }));
-      }
+    if (formData.baseProduct && baseProduct && !variant) {
+      const pricing = baseProduct.pricing || {};
+      setFormData(prev => ({
+        ...prev,
+        pricing: {
+          cost: (pricing.cost || 0) + prev.transformationCost,
+          retail: (pricing.retail || 0) + prev.transformationCost,
+          wholesale: (pricing.wholesale || 0) + prev.transformationCost,
+          distributor: pricing.distributor ? pricing.distributor + prev.transformationCost : 0
+        }
+      }));
     }
-  }, [formData.baseProduct, formData.transformationCost, products, variant]);
+  }, [formData.baseProduct, formData.transformationCost, baseProduct, variant]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -448,11 +430,10 @@ const VariantModal = ({ variant, products, productsLoading, isOpen, onClose, onS
           <ProductSearchableSelect
             label="Base Product"
             placeholder="Search base product…"
-            products={products}
             value={formData.baseProduct}
             onValueChange={(id) => setFormData({ ...formData, baseProduct: id })}
-            loading={productsLoading}
             disabled={!!variant}
+            withinModal
             className="w-full"
           />
 

@@ -1,21 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import {
-  Plus,
-  Wallet,
-  TrendingUp,
-  Calendar,
   ClipboardList,
-  RefreshCw,
+  RotateCcw,
   ArrowLeftRight,
   Eye,
   Printer,
   Pencil,
   Trash2,
-  Search,
-  Building,
-  User,
-  Phone,
-  Mail
+  Landmark,
+  FileText,
 } from 'lucide-react';
 import { useDebouncedCustomerSearch } from '../hooks/useDebouncedCustomerSearch';
 import { useDebouncedSupplierSearch } from '../hooks/useDebouncedSupplierSearch';
@@ -34,18 +27,66 @@ import {
   useDeleteBankPaymentMutation,
 } from '../store/services/bankPaymentsApi';
 import { showSuccessToast, showErrorToast, handleApiError } from '../utils/errorHandler';
-import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { formatCurrency, formatDate } from '../utils/formatters';
 import RecurringExpensesPanel from '../components/RecurringExpensesPanel';
-import { getLocalDateString } from '../utils/dateUtils';
+import { getLocalDateString, getDateDaysAgo } from '../utils/dateUtils';
+import DateFilter from '../components/DateFilter';
 import { DeleteConfirmationDialog } from '../components/ConfirmationDialog';
 import { useDeleteConfirmation } from '../hooks/useConfirmation';
 import { PrintModal } from '../components/print';
 import { useCompanyInfo } from '../hooks/useCompanyInfo';
+import {
+  PaymentFormCard,
+  PaymentFormGrid,
+  PaymentFormColumn,
+  PaymentFormSection,
+  PaymentPartyTypeRadio,
+  PaymentFormField,
+  PaymentAmountField,
+  PaymentDateField,
+  PaymentBankSelect,
+  PaymentFormActions,
+  paymentFormInputClass,
+} from '@/components/payments/PaymentFormLayout';
+import {
+  PaymentCustomerField,
+  PaymentSupplierField,
+  partyIdFromSelect,
+  customerSearchLabel,
+  supplierSearchLabel,
+} from '@/components/payments/PaymentPartyFields';
+import { PageLayout } from '@/components/layout/PageLayout';
 
 const today = getLocalDateString();
+
+/** Expense entries have no supplier/customer party (Record Expense), unlike Cash/Bank Payments to parties. */
+function isExpensePaymentEntry(payment) {
+  if (!payment) return false;
+  const supplierId =
+    payment.supplier?.id ||
+    payment.supplier?._id ||
+    payment.supplier_id ||
+    payment.supplierId;
+  const customerId =
+    payment.customer?.id ||
+    payment.customer?._id ||
+    payment.customer_id ||
+    payment.customerId;
+  return !supplierId && !customerId;
+}
+
+function getExpenseDateKey(expense) {
+  const raw = expense?.date || expense?.createdAt;
+  if (!raw) return '';
+  if (typeof raw === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    if (raw.includes('T')) return raw.split('T')[0];
+  }
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? '' : getLocalDateString(parsed);
+}
 
 const defaultFormState = {
   date: today,
@@ -68,14 +109,14 @@ const Expenses = () => {
   const [formData, setFormData] = useState(defaultFormState);
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [recentExpenses, setRecentExpenses] = useState([]);
+  const [recentFromDate, setRecentFromDate] = useState(() => getDateDaysAgo(30));
+  const [recentToDate, setRecentToDate] = useState(() => getLocalDateString());
   const [editingExpense, setEditingExpense] = useState(null);
   const [partyType, setPartyType] = useState('supplier'); // 'supplier' or 'customer'
   const [supplierSearchTerm, setSupplierSearchTerm] = useState('');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [selectedSupplier, setSelectedSupplier] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
-  const [supplierDropdownIndex, setSupplierDropdownIndex] = useState(-1);
-  const [customerDropdownIndex, setCustomerDropdownIndex] = useState(-1);
   const [printExpense, setPrintExpense] = useState(null);
   const { companyInfo } = useCompanyInfo();
 
@@ -93,21 +134,30 @@ const Expenses = () => {
     return [];
   }, [expenseAccountsResponse]);
 
-  const { data: banksResponse, isLoading: banksLoading } = useGetBanksQuery({ isActive: true });
+  const { data: banksResponse, isLoading: banksLoading } = useGetBanksQuery({ isActive: true, all: 'true' });
   const banks = useMemo(
     () => banksResponse?.data?.banks || banksResponse?.banks || banksResponse?.data || [],
     [banksResponse]
   );
 
+  const recentListQuery = {
+    limit: 100,
+    expenseOnly: true,
+    ...(recentFromDate ? { fromDate: recentFromDate } : {}),
+    ...(recentToDate ? { toDate: recentToDate } : {}),
+  };
+
   const { data: cashPaymentsResponse, isFetching: cashExpensesLoading } = useGetCashPaymentsQuery(
-    { limit: 20 }
+    recentListQuery,
+    { refetchOnMountOrArgChange: true }
   );
   const cashPaymentsData = useMemo(() => {
     return cashPaymentsResponse?.data?.cashPayments || cashPaymentsResponse?.cashPayments || cashPaymentsResponse?.data?.data?.cashPayments || [];
   }, [cashPaymentsResponse]);
 
   const { data: bankPaymentsResponse, isFetching: bankExpensesLoading } = useGetBankPaymentsQuery(
-    { limit: 20 }
+    recentListQuery,
+    { refetchOnMountOrArgChange: true }
   );
   const bankPaymentsData = useMemo(() => {
     return bankPaymentsResponse?.data?.bankPayments || bankPaymentsResponse?.bankPayments || bankPaymentsResponse?.data?.data?.bankPayments || [];
@@ -115,16 +165,38 @@ const Expenses = () => {
 
   const combinedRecentExpenses = useMemo(() => {
     const apiResults = [
-      ...(cashPaymentsData || []).map((item) => ({ ...item, source: 'cash' })),
-      ...(bankPaymentsData || []).map((item) => ({ ...item, source: 'bank' })),
-      ...recentExpenses
+      ...(cashPaymentsData || []).filter(isExpensePaymentEntry).map((item) => ({ ...item, source: 'cash' })),
+      ...(bankPaymentsData || []).filter(isExpensePaymentEntry).map((item) => ({ ...item, source: 'bank' })),
+      ...recentExpenses.filter(isExpensePaymentEntry),
     ];
 
     return apiResults
       .filter((item, index, self) => item?._id && index === self.findIndex((s) => s._id === item._id))
       .sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt))
-      .slice(0, 25);
+      .slice(0, 100);
   }, [cashPaymentsData, bankPaymentsData, recentExpenses]);
+
+  const expensesByDate = useMemo(() => {
+    const groups = new Map();
+    combinedRecentExpenses.forEach((expense) => {
+      const key = getExpenseDateKey(expense) || 'unknown';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(expense);
+    });
+
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([dateKey, items]) => ({
+        dateKey,
+        items,
+        total: items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+      }));
+  }, [combinedRecentExpenses]);
+
+  const recentGrandTotal = useMemo(
+    () => combinedRecentExpenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+    [combinedRecentExpenses]
+  );
 
   const valueToDisplayString = (value) => {
     if (value == null) return '';
@@ -190,17 +262,29 @@ const Expenses = () => {
   const { suppliers } = useDebouncedSupplierSearch(supplierSearchTerm, { selectedSupplier });
   const { customers } = useDebouncedCustomerSearch(customerSearchTerm, { selectedCustomer });
 
-  const handleSupplierSelect = (supplierId) => {
-    const supplier = suppliers.find(s => (s.id || s._id) === supplierId);
-    setSelectedSupplier(supplier);
+  const handleSupplierSelect = (supplierOrId) => {
+    const supplierId = partyIdFromSelect(supplierOrId);
+    if (!supplierId) return;
+    const supplier =
+      typeof supplierOrId === 'object' && supplierOrId
+        ? supplierOrId
+        : suppliers.find((s) => (s.id || s._id) === supplierId);
+    setSelectedSupplier(supplier || null);
+    setSupplierSearchTerm(supplier ? supplierSearchLabel(supplier) : '');
     setFormData(prev => ({ ...prev, supplier: supplierId, customer: '' }));
     setSelectedCustomer(null);
     setCustomerSearchTerm('');
   };
 
-  const handleCustomerSelect = (customerId) => {
-    const customer = customers.find(c => (c.id || c._id) === customerId);
-    setSelectedCustomer(customer);
+  const handleCustomerSelect = (customerOrId) => {
+    const customerId = partyIdFromSelect(customerOrId);
+    if (!customerId) return;
+    const customer =
+      typeof customerOrId === 'object' && customerOrId
+        ? customerOrId
+        : customers.find((c) => (c.id || c._id) === customerId);
+    setSelectedCustomer(customer || null);
+    setCustomerSearchTerm(customer ? customerSearchLabel(customer) : '');
     setFormData(prev => ({ ...prev, customer: customerId, supplier: '' }));
     setSelectedSupplier(null);
     setSupplierSearchTerm('');
@@ -208,7 +292,6 @@ const Expenses = () => {
 
   const handleSupplierSearch = (searchTerm) => {
     setSupplierSearchTerm(searchTerm);
-    setSupplierDropdownIndex(-1);
     if (searchTerm === '') {
       setSelectedSupplier(null);
       setFormData(prev => ({ ...prev, supplier: '' }));
@@ -217,69 +300,9 @@ const Expenses = () => {
 
   const handleCustomerSearch = (searchTerm) => {
     setCustomerSearchTerm(searchTerm);
-    setCustomerDropdownIndex(-1);
     if (searchTerm === '') {
       setSelectedCustomer(null);
       setFormData(prev => ({ ...prev, customer: '' }));
-    }
-  };
-
-  const handleSupplierKeyDown = (e) => {
-    if (!supplierSearchTerm || (suppliers || []).length === 0) return;
-    const filteredSuppliers = suppliers || [];
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        setSupplierDropdownIndex(prev => prev < filteredSuppliers.length - 1 ? prev + 1 : 0);
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        setSupplierDropdownIndex(prev => prev > 0 ? prev - 1 : filteredSuppliers.length - 1);
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (supplierDropdownIndex >= 0 && supplierDropdownIndex < filteredSuppliers.length) {
-          const s = filteredSuppliers[supplierDropdownIndex];
-          handleSupplierSelect(s.id || s._id);
-          setSupplierSearchTerm(s.displayName || s.companyName || s.name || '');
-          setSupplierDropdownIndex(-1);
-        }
-        break;
-      case 'Escape':
-        e.preventDefault();
-        setSupplierSearchTerm('');
-        setSupplierDropdownIndex(-1);
-        break;
-    }
-  };
-
-  const handleCustomerKeyDown = (e) => {
-    if (!customerSearchTerm || (customers || []).length === 0) return;
-    const filteredCustomers = customers || [];
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        setCustomerDropdownIndex(prev => prev < filteredCustomers.length - 1 ? prev + 1 : 0);
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        setCustomerDropdownIndex(prev => prev > 0 ? prev - 1 : filteredCustomers.length - 1);
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (customerDropdownIndex >= 0 && customerDropdownIndex < filteredCustomers.length) {
-          const c = filteredCustomers[customerDropdownIndex];
-          const name = c.businessName || c.business_name || c.displayName || c.name || '';
-          handleCustomerSelect(c.id || c._id);
-          setCustomerSearchTerm(name);
-          setCustomerDropdownIndex(-1);
-        }
-        break;
-      case 'Escape':
-        e.preventDefault();
-        setCustomerSearchTerm('');
-        setCustomerDropdownIndex(-1);
-        break;
     }
   };
 
@@ -454,439 +477,357 @@ const Expenses = () => {
     setPrintExpense(expense);
   };
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 flex items-center space-x-2">
-          <Wallet className="h-5 w-5 sm:h-6 sm:w-6 text-primary-600" />
-          <span>Record Expense</span>
-        </h1>
-        <div className="mt-1 lg:mt-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(420px,0.45fr)] gap-3 lg:gap-6 lg:items-start lg:mt-1">
-          <p className="text-sm sm:text-base text-gray-600 lg:mt-1">
-            Log operating expenses directly from cash or bank while posting to the right expense account.
-          </p>
-          <div className="border border-gray-200 rounded-lg p-3 sm:p-4 bg-gray-50 w-full">
-            <p className="text-xs sm:text-sm font-semibold text-gray-700 mb-2 sm:mb-3">Payment Method</p>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 mt-1">
-              {[
-                { value: 'cash', label: 'Cash', helper: 'Use cash on hand' },
-                { value: 'bank', label: 'Bank', helper: 'Use a bank account' }
-              ].map((option) => {
-                const isActive = paymentMethod === option.value;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => {
-                      setPaymentMethod(option.value);
-                      if (option.value === 'cash') {
-                        setFormData((prev) => ({ ...prev, bank: '' }));
-                      }
-                    }}
-                    className={`flex-1 px-3 sm:px-4 py-2.5 sm:py-3 rounded-xl border-2 text-left transition-all duration-200 ${
-                      isActive
-                        ? 'border-primary-500 bg-primary-50 text-primary-700 shadow-sm'
-                        : 'border-gray-200 text-gray-600 hover:border-primary-300 hover:bg-primary-50/40'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-2">
-                      <div
-                        className={`h-4 w-4 rounded-full border flex-shrink-0 ${
-                          isActive ? 'border-primary-500 bg-primary-500' : 'border-gray-300 bg-white'
-                        }`}
-                      />
-                      <span className="text-xs sm:text-sm font-semibold">{option.label}</span>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">{option.helper}</p>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      </div>
+  const isSaving =
+    creatingCashPayment ||
+    updatingCashPayment ||
+    creatingBankPayment ||
+    updatingBankPayment;
 
-      <div className="card relative">
-        <div className="card-content pt-4">
-          <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="space-y-4">
-              <div>
-                <label className="form-label flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0">
-                  <span>Expense Account</span>
-                  <Button
+  const expenseActionBtnClass =
+    'rounded-md p-2 text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900';
+
+  return (
+    <PageLayout>
+      <PaymentFormCard variant="expense">
+        <form onSubmit={handleSubmit}>
+          <PaymentFormGrid>
+            <PaymentFormColumn>
+              <PaymentFormSection
+                title="Payment Method"
+                description="Pay from cash on hand or a bank account"
+                icon={Landmark}
+              >
+                <PaymentPartyTypeRadio
+                  label="Pay From"
+                  value={paymentMethod}
+                  onChange={setPaymentMethod}
+                  options={[
+                    { value: 'cash', label: 'Cash' },
+                    { value: 'bank', label: 'Bank' },
+                  ]}
+                  onOptionChange={(type) => {
+                    if (type === 'cash') {
+                      setFormData((prev) => ({ ...prev, bank: '' }));
+                    }
+                  }}
+                />
+              </PaymentFormSection>
+
+              <PaymentFormSection
+                title="Expense Details"
+                description="Account, amount, date, and optional party"
+                icon={ClipboardList}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <PaymentFormField label="Expense Account" required className="flex-1">
+                    <select
+                      className={paymentFormInputClass}
+                      value={formData.expenseAccount}
+                      onChange={(e) => handleExpenseAccountChange(e.target.value)}
+                      required
+                      disabled={expenseAccountsLoading}
+                    >
+                      <option value="">Select expense account</option>
+                      {expenseAccounts.map((account) => (
+                        <option key={account._id} value={account._id}>
+                          {account.accountName} ({account.accountCode})
+                        </option>
+                      ))}
+                    </select>
+                  </PaymentFormField>
+                  <button
                     type="button"
                     onClick={resetForm}
-                    variant="outline"
-                    size="default"
-                    className="flex items-center justify-center gap-2 text-xs sm:text-sm"
+                    className="mt-6 inline-flex h-10 shrink-0 items-center gap-1.5 rounded-lg border border-neutral-300 bg-white px-3 text-sm font-medium text-neutral-700 shadow-sm hover:bg-neutral-50"
                   >
-                    <RefreshCw className="h-3 w-3 sm:h-4 sm:w-4" />
+                    <RotateCcw className="h-4 w-4" aria-hidden />
                     <span>Reset</span>
-                  </Button>
-                </label>
-                <select
-                  className="input"
-                  value={formData.expenseAccount}
-                  onChange={(e) => handleExpenseAccountChange(e.target.value)}
-                  required
-                  disabled={expenseAccountsLoading}
-                >
-                  <option value="">Select expense account</option>
-                  {expenseAccounts.map((account) => (
-                    <option key={account._id} value={account._id}>
-                      {account.accountName} ({account.accountCode})
-                    </option>
-                  ))}
-                </select>
-                {selectedAccount && (
-                  <p className="text-xs text-gray-500 mt-1">
+                  </button>
+                </div>
+                {selectedAccount ? (
+                  <p className="text-xs text-neutral-500">
                     Selected account will be debited when this expense is posted.
                   </p>
-                )}
-              </div>
+                ) : null}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="form-label">Amount</label>
-                  <div className="relative">
-                    <TrendingUp className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      className="input pl-9"
-                      value={formData.amount}
-                      onChange={(e) => setFormData((prev) => ({ ...prev, amount: e.target.value }))}
-                      required
-                    />
-                  </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <PaymentAmountField
+                    value={formData.amount}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, amount: e.target.value }))
+                    }
+                  />
+                  <PaymentDateField
+                    value={formData.date}
+                    onChange={(date) =>
+                      setFormData((prev) => ({ ...prev, date }))
+                    }
+                  />
                 </div>
-                <div>
-                  <label className="form-label">Date</label>
-                  <div className="relative">
-                    <Calendar className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
-                    <input
-                      type="date"
-                      className="input pl-9"
-                      value={formData.date}
-                      onChange={(e) => setFormData((prev) => ({ ...prev, date: e.target.value }))}
-                    />
-                  </div>
-                </div>
-              </div>
 
-              <div>
-                <label className="form-label">Description (optional)</label>
-                <Input
-                  type="text"
-                  placeholder={selectedAccount ? selectedAccount.accountName : 'e.g., Rent for November'}
-                  value={formData.particular}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, particular: e.target.value }))}
-                />
-              </div>
-              {paymentMethod === 'bank' && (
-                <div>
-                  <label className="form-label">Bank Account</label>
-                  <select
-                    className="input"
+                <PaymentFormField label="Description (optional)">
+                  <Input
+                    type="text"
+                    className={paymentFormInputClass}
+                    placeholder={
+                      selectedAccount ? selectedAccount.accountName : 'e.g., Rent for November'
+                    }
+                    value={formData.particular}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, particular: e.target.value }))
+                    }
+                  />
+                </PaymentFormField>
+
+                {paymentMethod === 'bank' ? (
+                  <PaymentBankSelect
                     value={formData.bank}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, bank: e.target.value }))}
-                    required
-                    disabled={banksLoading}
-                  >
-                    <option value="">Select bank account</option>
-                    {banks.map((bank) => (
-                      <option key={bank._id} value={bank._id}>
-                        {bank.bankName} • {bank.accountNumber}
-                        {bank.accountName ? ` (${bank.accountName})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, bank: e.target.value }))
+                    }
+                    banks={banks}
+                    loading={banksLoading}
+                  />
+                ) : null}
 
-              <div className="pt-2">
-                <label className="form-label mb-3 text-gray-600">Party Association (Optional)</label>
-                <div className="flex items-center gap-6 mb-4">
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <input
-                      type="radio"
-                      value="supplier"
-                      checked={partyType === 'supplier'}
-                      onChange={(e) => {
-                        setPartyType(e.target.value);
+                <div className="border-t border-neutral-200 pt-4">
+                  <PaymentPartyTypeRadio
+                    label="Party Association (Optional)"
+                    value={partyType}
+                    onChange={setPartyType}
+                    onOptionChange={(type) => {
+                      if (type === 'supplier') {
                         setSelectedCustomer(null);
                         setCustomerSearchTerm('');
-                        setFormData(prev => ({ ...prev, customer: '' }));
-                      }}
-                      className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500 cursor-pointer"
+                        setFormData((prev) => ({ ...prev, customer: '' }));
+                        return;
+                      }
+                      setSelectedSupplier(null);
+                      setSupplierSearchTerm('');
+                      setFormData((prev) => ({ ...prev, supplier: '' }));
+                    }}
+                    className="mb-4"
+                  />
+                  {partyType === 'supplier' ? (
+                    <PaymentSupplierField
+                      suppliers={suppliers}
+                      selectedSupplier={selectedSupplier}
+                      onSelect={handleSupplierSelect}
+                      onSearch={handleSupplierSearch}
+                      searchValue={supplierSearchTerm}
+                      placeholder="Search or select supplier..."
                     />
-                    <span className="text-sm font-medium text-gray-700 group-hover:text-gray-900 transition-colors">Supplier</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <input
-                      type="radio"
-                      value="customer"
-                      checked={partyType === 'customer'}
-                      onChange={(e) => {
-                        setPartyType(e.target.value);
-                        setSelectedSupplier(null);
-                        setSupplierSearchTerm('');
-                        setFormData(prev => ({ ...prev, supplier: '' }));
-                      }}
-                      className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500 cursor-pointer"
+                  ) : (
+                    <PaymentCustomerField
+                      customers={customers}
+                      selectedCustomer={selectedCustomer}
+                      onSelect={handleCustomerSelect}
+                      onSearch={handleCustomerSearch}
+                      searchValue={customerSearchTerm}
+                      placeholder="Search or select customer..."
                     />
-                    <span className="text-sm font-medium text-gray-700 group-hover:text-gray-900 transition-colors">Customer</span>
-                  </label>
+                  )}
                 </div>
+              </PaymentFormSection>
+            </PaymentFormColumn>
 
-                {partyType === 'supplier' ? (
-                  <div className="relative">
-                    <div className="relative">
-                      <Input
-                        type="text"
-                        autoComplete="off"
-                        value={supplierSearchTerm}
-                        onChange={(e) => handleSupplierSearch(e.target.value)}
-                        onKeyDown={handleSupplierKeyDown}
-                        className="w-full pr-10"
-                        placeholder="Search or select supplier..."
-                      />
-                      <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <PaymentFormColumn>
+              <PaymentFormSection
+                title="Notes & Posting"
+                description="Internal notes and ledger preview"
+                icon={FileText}
+              >
+                <PaymentFormField label="Notes">
+                  <Textarea
+                    rows={5}
+                    className="min-h-[120px] rounded-lg border-neutral-200 bg-white text-sm shadow-sm focus-visible:ring-neutral-300"
+                    placeholder="Optional internal notes..."
+                    value={formData.notes}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, notes: e.target.value }))
+                    }
+                  />
+                </PaymentFormField>
+
+                <div className="rounded-xl border border-neutral-200 bg-white p-4">
+                  <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    Posting Preview
+                  </h3>
+                  <div className="space-y-2.5 text-sm text-neutral-700">
+                    <div className="flex items-start justify-between gap-3 border-b border-neutral-100 pb-2">
+                      <span className="font-medium text-neutral-500">Debit</span>
+                      <span className="text-right text-neutral-900">
+                        {selectedAccount
+                          ? `${selectedAccount.accountName} (${selectedAccount.accountCode})`
+                          : 'Select expense account'}
+                      </span>
                     </div>
-                    {supplierSearchTerm && !selectedSupplier && (
-                      <div className="absolute z-10 mt-1 w-full max-h-40 overflow-y-auto border border-gray-200 rounded-md bg-white shadow-lg">
-                        {(suppliers || []).map((supplier, index) => (
-                          <div
-                            key={supplier.id || supplier._id}
-                            onClick={() => {
-                              handleSupplierSelect(supplier.id || supplier._id);
-                              setSupplierSearchTerm(supplier.displayName || supplier.companyName || supplier.name || '');
-                              setSupplierDropdownIndex(-1);
-                            }}
-                            className={`px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0 ${supplierDropdownIndex === index ? 'bg-blue-50' : ''}`}
-                          >
-                            <div className="font-medium text-sm text-gray-900">{supplier.displayName || supplier.companyName || supplier.name || 'Unknown'}</div>
-                            <div className="text-xs text-gray-600">{supplier.phone}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {selectedSupplier && (
-                      <div className="mt-3 bg-gray-50 border border-gray-200 rounded-lg p-3">
-                        <div className="flex items-center space-x-3">
-                          <Building className="h-4 w-4 text-gray-400" />
-                          <div className="flex-1">
-                            <p className="text-sm font-medium">{selectedSupplier.displayName || selectedSupplier.companyName || selectedSupplier.name}</p>
-                            {selectedSupplier.phone && <p className="text-xs text-gray-500">{selectedSupplier.phone}</p>}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <div className="relative">
-                      <Input
-                        type="text"
-                        autoComplete="off"
-                        value={customerSearchTerm}
-                        onChange={(e) => handleCustomerSearch(e.target.value)}
-                        onKeyDown={handleCustomerKeyDown}
-                        className="w-full pr-10"
-                        placeholder="Search or select customer..."
-                      />
-                      <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <div className="flex items-center justify-between gap-3 border-b border-neutral-100 pb-2">
+                      <span className="font-medium text-neutral-500">Credit</span>
+                      <span className="text-neutral-900">
+                        {paymentMethod === 'cash' ? 'Cash on Hand' : 'Bank Account'}
+                      </span>
                     </div>
-                    {customerSearchTerm && !selectedCustomer && (
-                      <div className="absolute z-10 mt-1 w-full max-h-40 overflow-y-auto border border-gray-200 rounded-md bg-white shadow-lg">
-                        {(customers || []).map((customer, index) => (
-                          <div
-                            key={customer.id || customer._id}
-                            onClick={() => {
-                              const name = customer.businessName || customer.business_name || customer.displayName || customer.name || '';
-                              handleCustomerSelect(customer.id || customer._id);
-                              setCustomerSearchTerm(name);
-                              setCustomerDropdownIndex(-1);
-                            }}
-                            className={`px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0 ${customerDropdownIndex === index ? 'bg-blue-50' : ''}`}
-                          >
-                            <div className="font-medium text-sm text-gray-900">{customer.businessName || customer.business_name || customer.displayName || customer.name || 'Unknown'}</div>
-                            <div className="text-xs text-gray-600">{customer.phone}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {selectedCustomer && (
-                      <div className="mt-3 bg-gray-50 border border-gray-200 rounded-lg p-3">
-                        <div className="flex items-center space-x-3">
-                          <User className="h-4 w-4 text-gray-400" />
-                          <div className="flex-1">
-                            <p className="text-sm font-medium">{selectedCustomer.businessName || selectedCustomer.business_name || selectedCustomer.displayName || selectedCustomer.name}</p>
-                            {selectedCustomer.phone && <p className="text-xs text-gray-500">{selectedCustomer.phone}</p>}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="form-label">Notes</label>
-                <Textarea
-                  rows={6}
-                  placeholder="Optional internal notes..."
-                  value={formData.notes}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, notes: e.target.value }))}
-                />
-              </div>
-
-              <div className="border rounded-lg bg-primary-50/40 p-4">
-                <h3 className="text-sm font-semibold text-primary-700 mb-2">Posting Preview</h3>
-                <div className="space-y-2 text-sm text-gray-700">
-                  <div className="flex items-center justify-between">
-                    <span>Debit</span>
-                    <span>{selectedAccount ? `${selectedAccount.accountName} (${selectedAccount.accountCode})` : 'Select expense account'}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Credit</span>
-                    <span>{paymentMethod === 'cash' ? 'Cash on Hand' : 'Bank Account'}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Amount</span>
-                    <span>
-                      {formData.amount
-                        ? formatCurrency(parseFloat(formData.amount) || 0)
-                        : formatCurrency(0)}
-                    </span>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium text-neutral-500">Amount</span>
+                      <span className="text-lg font-bold tabular-nums text-neutral-900">
+                        {formData.amount
+                          ? formatCurrency(parseFloat(formData.amount) || 0)
+                          : formatCurrency(0)}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
+              </PaymentFormSection>
+            </PaymentFormColumn>
+          </PaymentFormGrid>
 
-              <div className="flex justify-end">
-                <Button
-                  type="submit"
-                  variant="default"
-                  size="default"
-                  className="flex items-center justify-center gap-2 w-full sm:w-auto"
-                  disabled={
-                    creatingCashPayment ||
-                    updatingCashPayment ||
-                    creatingBankPayment ||
-                    updatingBankPayment
-                  }
-                >
-                  <Plus className="h-4 w-4" />
-                  <span>{editingExpense ? 'Update Expense' : 'Save Expense'}</span>
-                </Button>
-              </div>
-            </div>
-          </form>
-        </div>
-      </div>
+          <PaymentFormActions
+            onReset={resetForm}
+            onSubmit={() => handleSubmit({ preventDefault: () => {} })}
+            isSubmitting={isSaving}
+            submitLabel={editingExpense ? 'Update Expense' : 'Save Expense'}
+            submittingLabel={editingExpense ? 'Updating...' : 'Saving...'}
+          />
+        </form>
+      </PaymentFormCard>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <div className="card">
-          <div className="card-header flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900 flex items-center space-x-2">
-              <ArrowLeftRight className="h-5 w-5 text-primary-600" />
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 sm:px-5 sm:py-4">
+            <h2 className="flex items-center gap-2 text-base font-semibold text-neutral-900 sm:text-lg">
+              <ArrowLeftRight className="h-5 w-5 text-neutral-700" aria-hidden />
               <span>Recent Expense Entries</span>
             </h2>
             {(cashExpensesLoading || bankExpensesLoading) && (
-              <span className="text-xs text-gray-500">Refreshing...</span>
+              <span className="text-xs text-neutral-500">Refreshing...</span>
             )}
           </div>
-          <div className="card-content">
+          <div className="border-b border-neutral-200 px-4 py-3 sm:px-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div className="min-w-0 flex-1 max-w-xl">
+                <label className="mb-1.5 block text-sm font-medium text-neutral-700">Date range</label>
+                <DateFilter
+                  startDate={recentFromDate}
+                  endDate={recentToDate}
+                  onDateChange={(start, end) => {
+                    setRecentFromDate(start || '');
+                    setRecentToDate(end || '');
+                  }}
+                  compact
+                  showPresets
+                  showClear
+                />
+              </div>
+              {combinedRecentExpenses.length > 0 && (
+                <div className="text-right text-sm text-neutral-600 shrink-0">
+                  <span className="font-medium text-neutral-900">{combinedRecentExpenses.length}</span> entries
+                  <span className="mx-1.5 text-neutral-300">·</span>
+                  Total <span className="font-semibold tabular-nums text-neutral-900">{formatCurrency(recentGrandTotal)}</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="p-4 sm:p-5">
             {combinedRecentExpenses.length === 0 ? (
-              <p className="text-sm text-gray-500">
-                Expenses recorded here will appear in this list for quick reference.
+              <p className="text-sm text-neutral-500">
+                No expense entries in this date range. Adjust the filter or record a new expense above.
               </p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
+              <div className="table-scroll">
+                <table className="min-w-full divide-y divide-neutral-200">
+                  <thead className="bg-neutral-50">
                     <tr>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Voucher</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Expense Account</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Description</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Party</th>
-                      <th className="px-4 py-2 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Amount</th>
-                      <th className="px-4 py-2 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Method</th>
-                      <th className="px-4 py-2 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">Voucher</th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">Expense Account</th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">Description</th>
+                      <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">Party</th>
+                      <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-neutral-500">Amount</th>
+                      <th className="px-4 py-2 text-center text-xs font-semibold uppercase tracking-wide text-neutral-500">Method</th>
+                      <th className="px-4 py-2 text-center text-xs font-semibold uppercase tracking-wide text-neutral-500">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {combinedRecentExpenses.map((expense) => (
-                      <tr key={expense._id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
-                          {formatDate(expense.date || expense.createdAt)}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
-                          {expense.voucherCode || expense._id}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-700">
-                          {expense.expenseAccount?.accountName
-                            ? `${expense.expenseAccount.accountName} (${expense.expenseAccount.accountCode})`
-                            : '—'}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">
-                          {expense.particular || '—'}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">
-                          {expense.supplier?.displayName || expense.customer?.displayName || '—'}
-                        </td>
-                        <td className="px-4 py-3 text-sm font-semibold text-gray-900 text-right whitespace-nowrap">
-                          {formatCurrency(expense.amount || 0)}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 text-center capitalize whitespace-nowrap">
-                          {resolvePaymentMethodLabel(expense)}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 text-center whitespace-nowrap">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => handleViewExpense(expense)}
-                              className="p-2 rounded-md text-blue-600 hover:bg-blue-50 transition-colors"
-                              title="View Expense"
-                            >
-                              <Eye className="h-4 w-4" />
-                              <span className="sr-only">View</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handlePrintExpense(expense)}
-                              className="p-2 rounded-md text-green-600 hover:bg-green-50 transition-colors"
-                              title="Print Expense"
-                            >
-                              <Printer className="h-4 w-4" />
-                              <span className="sr-only">Print</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleEditExpense(expense)}
-                              className="p-2 rounded-md text-blue-600 hover:bg-blue-50 transition-colors"
-                              title="Edit Expense"
-                            >
-                              <Pencil className="h-4 w-4" />
-                              <span className="sr-only">Edit</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteExpense(expense)}
-                              className="p-2 rounded-md text-red-600 hover:bg-red-50 transition-colors"
-                              title="Delete Expense"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                              <span className="sr-only">Delete</span>
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
+                  <tbody className="divide-y divide-neutral-100 bg-white">
+                    {expensesByDate.map(({ dateKey, items, total }) => (
+                      <React.Fragment key={dateKey}>
+                        <tr className="bg-neutral-100/80">
+                          <td colSpan={7} className="px-4 py-2.5 text-sm font-semibold text-neutral-800">
+                            <span>{dateKey !== 'unknown' ? formatDate(dateKey) : 'Unknown date'}</span>
+                            <span className="mx-2 font-normal text-neutral-400">·</span>
+                            <span className="font-normal text-neutral-600">
+                              {items.length} {items.length === 1 ? 'entry' : 'entries'}
+                            </span>
+                            <span className="mx-2 font-normal text-neutral-400">·</span>
+                            <span className="font-normal text-neutral-600">
+                              Day total <span className="font-semibold tabular-nums text-neutral-900">{formatCurrency(total)}</span>
+                            </span>
+                          </td>
+                        </tr>
+                        {items.map((expense) => (
+                          <tr key={expense._id} className="hover:bg-neutral-50">
+                            <td className="whitespace-nowrap px-4 py-3 text-sm text-neutral-700">
+                              {expense.voucherCode || expense._id}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-neutral-700">
+                              {expense.expenseAccount?.accountName
+                                ? `${expense.expenseAccount.accountName} (${expense.expenseAccount.accountCode})`
+                                : '—'}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-neutral-600">
+                              {expense.particular || '—'}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-neutral-600">
+                              {expense.supplier?.displayName || expense.customer?.displayName || '—'}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold tabular-nums text-neutral-900">
+                              {formatCurrency(expense.amount || 0)}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3 text-center text-sm capitalize text-neutral-600">
+                              {resolvePaymentMethodLabel(expense)}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3 text-center text-sm text-neutral-600">
+                              <div className="flex items-center justify-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleViewExpense(expense)}
+                                  className={expenseActionBtnClass}
+                                  title="View Expense"
+                                >
+                                  <Eye className="h-4 w-4" aria-hidden />
+                                  <span className="sr-only">View</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handlePrintExpense(expense)}
+                                  className={expenseActionBtnClass}
+                                  title="Print Expense"
+                                >
+                                  <Printer className="h-4 w-4" aria-hidden />
+                                  <span className="sr-only">Print</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditExpense(expense)}
+                                  className={expenseActionBtnClass}
+                                  title="Edit Expense"
+                                >
+                                  <Pencil className="h-4 w-4" aria-hidden />
+                                  <span className="sr-only">Edit</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteExpense(expense)}
+                                  className={expenseActionBtnClass}
+                                  title="Delete Expense"
+                                >
+                                  <Trash2 className="h-4 w-4" aria-hidden />
+                                  <span className="sr-only">Delete</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
                     ))}
                   </tbody>
                 </table>
@@ -985,7 +926,7 @@ const Expenses = () => {
           </div>
         </PrintModal>
       )}
-    </div>
+    </PageLayout>
   );
 };
 

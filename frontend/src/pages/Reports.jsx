@@ -21,7 +21,8 @@ import {
   Wallet,
   Building2,
   MoreHorizontal,
-  FileText
+  FileText,
+  Warehouse
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -30,6 +31,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from '@/components/ui/button';
+import { LoadingSpinner, LoadingInline } from '../components/LoadingSpinner';
 import ExcelExportButton from '../components/ExcelExportButton';
 import PdfExportButton from '../components/PdfExportButton';
 import {
@@ -47,13 +49,93 @@ import { useGetSuppliersQuery } from '../store/services/suppliersApi';
 import DateFilter from '../components/DateFilter';
 import PrintReportModal from '../components/PrintReportModal';
 import PageShell from '../components/PageShell';
+import { PageHeader } from '../components/layout/PageHeader';
 import { getCurrentDatePakistan, getDateDaysAgo } from '../utils/dateUtils';
 
 import { useCompanyInfo } from '../hooks/useCompanyInfo';
+import {
+  getCustomerDisplayName,
+  getSupplierDisplayName,
+  getPartyDisplayName,
+  getProductDisplayName,
+  getCategoryDisplayName,
+} from '../utils/partyDisplay';
+import { toTitleCase } from '../utils/titleCase';
+import WarehouseStockReportSection from './reports/WarehouseStockReportSection';
+import { LocationStockReportSection, useWarehouseInventoryMode } from '../features/inventory';
+
+const REPORT_TITLE_CASE_KEYS = new Set([
+  'name',
+  'businessName',
+  'productName',
+  'supplierName',
+  'customerName',
+  'categoryName',
+  'city',
+  'accountName',
+  'bankName',
+  'customerLabel',
+  'contactPerson',
+  'category',
+]);
+
+function formatReportCell(key, value) {
+  if (value == null || value === '') return value;
+  if (typeof value !== 'string') return value;
+  if (!REPORT_TITLE_CASE_KEYS.has(key)) return value;
+  return toTitleCase(value);
+}
+
+function renderReportCell(col, row, rowIndex) {
+  if (col.render) {
+    return rowIndex !== undefined ? col.render(row, rowIndex) : col.render(row);
+  }
+  return formatReportCell(col.key, row[col.key]);
+}
+
+function formatReportRowForExport(item, index) {
+  const row = {
+    ...item,
+    sno: index + 1,
+    productName: getProductDisplayName(
+      item.product || { name: item.productName },
+      item.productName || ''
+    ),
+    sku: item.product?.sku || item.sku,
+    customerLabel: getCustomerDisplayName(
+      item.customer,
+      item.customerName || item.businessName || item.name || ''
+    ),
+    lastOrderLabel: item.lastOrderDate
+      ? new Date(item.lastOrderDate).toLocaleDateString()
+      : '',
+    supplierName: item.supplierName
+      ? getSupplierDisplayName({ name: item.supplierName }, item.supplierName)
+      : item.supplierName,
+    customerName: item.customerName
+      ? getCustomerDisplayName({ businessName: item.customerName, name: item.name }, item.customerName)
+      : item.customerName,
+    name: getPartyDisplayName(
+      {
+        businessName: item.businessName,
+        name: item.name || item.accountName || item.productName || item.bankName || item.product?.name,
+      },
+      item.name || ''
+    ) || item.name,
+    businessName: getPartyDisplayName(item, item.businessName || item.name || ''),
+    categoryName: getCategoryDisplayName({ name: item.categoryName }, item.categoryName || ''),
+    city: item.city ? toTitleCase(item.city) : item.city,
+    accountName: item.accountName ? toTitleCase(item.accountName) : item.accountName,
+    bankName: item.bankName ? toTitleCase(item.bankName) : item.bankName,
+    category: item.category ? toTitleCase(item.category) : item.category,
+  };
+  return row;
+}
 
 export const Reports = () => {
   const { companyInfo: companySettings } = useCompanyInfo();
-  
+  const { enabled: warehouseInventoryEnabled } = useWarehouseInventoryMode();
+
   // Refs for responsive actions
   const excelExportRef = useRef(null);
   const pdfExportRef = useRef(null);
@@ -94,6 +176,23 @@ export const Reports = () => {
   const [selectedBankIds, setSelectedBankIds] = useState([]);
   /** When true, report API calls append `nocache=1` so the backend skips the reports TTL cache (see reportsService.reportsCache). */
   const [reportNoCache, setReportNoCache] = useState(false);
+  const [warehouseStockReport, setWarehouseStockReport] = useState({
+    rows: [],
+    warehouseName: '',
+    summary: { totalProducts: 0, inStockCount: 0, totalOnHand: 0, totalAvailable: 0 },
+  });
+  const [shopStockReport, setShopStockReport] = useState({
+    rows: [],
+    shopName: '',
+    summary: { totalProducts: 0, inStockCount: 0, totalOnHand: 0, totalAvailable: 0 },
+  });
+
+  useEffect(() => {
+    if (warehouseInventoryEnabled) return;
+    if (activeTab === 'warehouse-stock' || activeTab === 'shop-stock') {
+      setActiveTab('inventory');
+    }
+  }, [warehouseInventoryEnabled, activeTab]);
 
   const reportNoCacheParams = reportNoCache ? { nocache: '1' } : {};
 
@@ -110,6 +209,7 @@ export const Reports = () => {
     if (activeTab === 'inventory') promises.push(refetchInventory());
     if (activeTab === 'financial') promises.push(refetchFinancial());
     if (activeTab === 'bank-cash') promises.push(refetchBankCash());
+    // warehouse-stock refetches via its section Refresh button
 
     Promise.all(promises).finally(() => {
       setReportNoCache(false);
@@ -328,14 +428,20 @@ export const Reports = () => {
             header: 'Party Name',
             render: (row) => (
               <div>
-                <div className="font-medium">{row.businessName || row.name}</div>
-                {row.businessName && row.businessName !== row.contactPerson && row.contactPerson && (
-                  <div className="text-xs text-gray-500">Contact: {row.contactPerson}</div>
+                <div className="font-medium">{getPartyDisplayName(row, row.businessName || row.name || '—')}</div>
+                {row.contactPerson && (
+                  <div className="text-xs text-gray-500">
+                    Contact: {toTitleCase(row.contactPerson)}
+                  </div>
                 )}
               </div>
             )
           },
-          { header: 'City', key: 'city' },
+          {
+            header: 'City',
+            key: 'city',
+            render: (row) => (row.city ? toTitleCase(row.city) : '—'),
+          },
           {
             header: 'Opening Bal.',
             render: (row) => (row.openingBalance ?? 0).toLocaleString(),
@@ -380,7 +486,7 @@ export const Reports = () => {
         if (salesGroupBy === 'product') {
           return [
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
-            { header: 'Product', key: 'productName' },
+            { header: 'Product', render: (row) => getProductDisplayName({ name: row.productName }, row.productName || '—'), key: 'productName' },
             { header: 'SKU', key: 'sku' },
             { header: 'Qty Sold', render: (row) => (row.totalQuantity || 0).toLocaleString(), align: 'right' },
             { header: 'Revenue', render: (row) => (row.totalRevenue || 0).toLocaleString(), align: 'right', bold: true },
@@ -389,7 +495,7 @@ export const Reports = () => {
         if (salesGroupBy === 'category') {
           return [
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
-            { header: 'Category', key: 'categoryName' },
+            { header: 'Category', render: (row) => getCategoryDisplayName({ name: row.categoryName }, row.categoryName || '—'), key: 'categoryName' },
             { header: 'Items Sold', render: (row) => (row.itemCount || 0).toLocaleString(), align: 'right' },
             { header: 'Revenue', render: (row) => (row.totalRevenue || 0).toLocaleString(), align: 'right', bold: true },
           ];
@@ -397,7 +503,7 @@ export const Reports = () => {
         if (salesGroupBy === 'city') {
           return [
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
-            { header: 'City', key: 'city' },
+            { header: 'City', render: (row) => (row.city ? toTitleCase(row.city) : '—'), key: 'city' },
             { header: 'Orders', key: 'totalOrders', align: 'right' },
             { header: 'Revenue', render: (row) => (row.totalRevenue || 0).toLocaleString(), align: 'right', bold: true },
           ];
@@ -407,9 +513,24 @@ export const Reports = () => {
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Invoice #', key: 'invoiceNo' },
             { header: 'Date', render: (row) => new Date(row.date).toLocaleDateString() },
-            { header: 'Customer', render: (row) => row.customerName || row.name || 'N/A' },
+            { header: 'Customer', render: (row) => getCustomerDisplayName({ businessName: row.customerName, name: row.name }, row.customerName || row.name || 'N/A') },
             { header: 'Total', render: (row) => (row.total || 0).toLocaleString(), align: 'right', bold: true },
-            { header: 'Status', key: 'status' },
+            {
+              header: 'Status',
+              key: 'status',
+              render: (row) => {
+                const status = String(row.status || '').toLowerCase();
+                let badgeClass = '';
+                if (status === 'paid') badgeClass = 'bg-green-100 text-green-800';
+                else if (status === 'partial') badgeClass = 'bg-yellow-100 text-yellow-800';
+                else badgeClass = 'bg-red-100 text-red-800';
+                return (
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${badgeClass}`}>
+                    {status}
+                  </span>
+                );
+              }
+            },
           ];
         }
         return [];
@@ -419,10 +540,10 @@ export const Reports = () => {
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             {
               header: 'Supplier',
-              render: (row) => row.supplierName || '—',
+              render: (row) => getSupplierDisplayName({ name: row.supplierName }, row.supplierName || '—'),
               key: 'supplierName'
             },
-            { header: 'Product Name', key: 'name' },
+            { header: 'Product Name', render: (row) => getProductDisplayName({ name: row.name }, row.name || '—'), key: 'name' },
             ...(showCostPrice ? [
               { header: 'Last Purchase Price', render: (row) => (row.lastPurchasePrice || 0).toLocaleString(), align: 'right' },
               { header: 'Op. Amount', render: (row) => (row.openingAmount || 0).toLocaleString(), align: 'right' },
@@ -459,12 +580,12 @@ export const Reports = () => {
           { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
           {
             header: 'Supplier',
-            render: (row) => row.supplierName || '—',
+            render: (row) => getSupplierDisplayName({ name: row.supplierName }, row.supplierName || '—'),
             key: 'supplierName'
           },
-          { header: 'Product Name', key: 'name' },
+          { header: 'Product Name', render: (row) => getProductDisplayName({ name: row.name }, row.name || '—'), key: 'name' },
           { header: 'SKU', key: 'sku' },
-          { header: 'Category', key: 'categoryName' },
+          { header: 'Category', render: (row) => getCategoryDisplayName({ name: row.categoryName }, row.categoryName || '—'), key: 'categoryName' },
           { header: 'Stock', render: (row) => `${(row.stockQuantity || 0).toLocaleString()} ${row.unit || ''}`, align: 'right' },
         ];
         if (inventoryType === 'valuation') {
@@ -495,7 +616,7 @@ export const Reports = () => {
           return [
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Code', key: 'accountCode' },
-            { header: 'Account Name', key: 'accountName' },
+            { header: 'Account Name', render: (row) => (row.accountName ? toTitleCase(row.accountName) : '—'), key: 'accountName' },
             { header: 'Debit Balance', render: (row) => row.debitBalance > 0 ? row.debitBalance.toLocaleString() : '-', align: 'right' },
             { header: 'Credit Balance', render: (row) => row.creditBalance > 0 ? row.creditBalance.toLocaleString() : '-', align: 'right' },
           ];
@@ -503,8 +624,8 @@ export const Reports = () => {
         if (financialType === 'pl-statement') {
           return [
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
-            { header: 'Category', key: 'category' },
-            { header: 'Account', key: 'accountName' },
+            { header: 'Category', render: (row) => (row.category ? toTitleCase(row.category) : '—'), key: 'category' },
+            { header: 'Account', render: (row) => (row.accountName ? toTitleCase(row.accountName) : '—'), key: 'accountName' },
             { header: 'Type', key: 'accountType', render: (row) => <span className="capitalize">{row.accountType}</span> },
             { header: 'Amount', render: (row) => (row.amount || 0).toLocaleString(), align: 'right', bold: true },
           ];
@@ -513,8 +634,8 @@ export const Reports = () => {
           return [
             { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
             { header: 'Type', key: 'accountType', render: (row) => <span className="capitalize font-bold">{row.accountType}</span> },
-            { header: 'Category', key: 'category' },
-            { header: 'Account', key: 'accountName' },
+            { header: 'Category', render: (row) => (row.category ? toTitleCase(row.category) : '—'), key: 'category' },
+            { header: 'Account', render: (row) => (row.accountName ? toTitleCase(row.accountName) : '—'), key: 'accountName' },
             { header: 'Balance', render: (row) => (row.balance || 0).toLocaleString(), align: 'right', bold: true },
           ];
         }
@@ -522,7 +643,7 @@ export const Reports = () => {
       case 'bank-cash':
         return [
           { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
-          { header: 'Bank', render: (row) => row.bankName || 'N/A' },
+          { header: 'Bank', render: (row) => (row.bankName ? toTitleCase(row.bankName) : 'N/A') },
           { header: 'Account', render: (row) => row.accountNumber || row.accountName || '-' },
           { header: 'Opening', render: (row) => (row.openingBalance || 0).toLocaleString(), align: 'right' },
           { header: 'Receipts', render: (row) => (row.totalReceipts || 0).toLocaleString(), align: 'right' },
@@ -534,10 +655,10 @@ export const Reports = () => {
           { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
           {
             header: 'Supplier',
-            render: (row) => row.supplierName || '—',
+            render: (row) => getSupplierDisplayName({ name: row.supplierName }, row.supplierName || '—'),
             key: 'supplierName'
           },
-          { header: 'Product', render: (row) => row.product?.name || '—' },
+          { header: 'Product', render: (row) => getProductDisplayName(row.product, '—') },
           { header: 'SKU', render: (row) => row.product?.sku || '—' },
           { header: 'Qty sold', render: (row) => (row.totalQuantity || 0).toLocaleString(), align: 'right' },
           { header: 'Revenue', render: (row) => (row.totalRevenue || 0).toLocaleString(), align: 'right', bold: true },
@@ -549,12 +670,7 @@ export const Reports = () => {
           { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
           {
             header: 'Customer',
-            render: (row) =>
-              row.customer?.businessName ||
-              row.customer?.business_name ||
-              row.customer?.name ||
-              [row.customer?.firstName, row.customer?.lastName].filter(Boolean).join(' ') ||
-              '—'
+            render: (row) => getCustomerDisplayName(row.customer, '—')
           },
           { header: 'Orders', render: (row) => (row.totalOrders || 0).toLocaleString(), align: 'right' },
           { header: 'Revenue', render: (row) => (row.totalRevenue || 0).toLocaleString(), align: 'right', bold: true },
@@ -564,6 +680,28 @@ export const Reports = () => {
             header: 'Last order',
             render: (row) =>
               row.lastOrderDate ? new Date(row.lastOrderDate).toLocaleDateString() : '—'
+          },
+        ];
+      case 'warehouse-stock':
+      case 'shop-stock':
+        return [
+          { header: 'S.NO', render: (row, idx) => (idx ?? 0) + 1, align: 'right', key: 'sno' },
+          {
+            header: 'Product',
+            render: (row) => getProductDisplayName(
+              { name: row.productName, sku: row.productSku },
+              row.productName || '—'
+            ),
+            key: 'productName',
+          },
+          { header: 'SKU', key: 'productSku', render: (row) => row.productSku || '—' },
+          { header: 'On Hand', render: (row) => Number(row.quantity ?? 0).toLocaleString(), align: 'right' },
+          { header: 'Reserved', render: (row) => Number(row.reservedQuantity ?? 0).toLocaleString(), align: 'right' },
+          {
+            header: 'Available',
+            render: (row) => Number(row.availableQuantity ?? 0).toLocaleString(),
+            align: 'right',
+            bold: true,
           },
         ];
       default:
@@ -602,6 +740,14 @@ export const Reports = () => {
         return 'Top Products by Revenue';
       case 'top-customers':
         return 'Top Customers by Revenue';
+      case 'warehouse-stock':
+        return warehouseStockReport.warehouseName
+          ? `Warehouse Stock — ${warehouseStockReport.warehouseName}`
+          : 'Warehouse Stock Report';
+      case 'shop-stock':
+        return shopStockReport.shopName
+          ? `Shop Stock — ${shopStockReport.shopName}`
+          : 'Shop Stock Report';
       default:
         return 'Business Report';
     }
@@ -623,6 +769,10 @@ export const Reports = () => {
         return productReportData?.products || [];
       case 'top-customers':
         return customerReportData?.customers || [];
+      case 'warehouse-stock':
+        return warehouseStockReport.rows || [];
+      case 'shop-stock':
+        return shopStockReport.rows || [];
       default:
         return [];
     }
@@ -717,6 +867,15 @@ export const Reports = () => {
         'Orders (top 100 rows)': tableOrders
       };
     }
+    if (activeTab === 'warehouse-stock' || activeTab === 'shop-stock') {
+      const s = (activeTab === 'shop-stock' ? shopStockReport : warehouseStockReport).summary || {};
+      return {
+        'Total Products': s.totalProducts || 0,
+        'In Stock (page)': s.inStockCount || 0,
+        'On Hand (page)': s.totalOnHand || 0,
+        'Available (page)': s.totalAvailable || 0,
+      };
+    }
     return null;
   };
 
@@ -742,6 +901,10 @@ export const Reports = () => {
     if (activeTab === 'top-customers') {
       if (title === 'Customers with orders') return 'Distinct buyers in period';
       return 'In Selected Period';
+    }
+    if (activeTab === 'warehouse-stock' || activeTab === 'shop-stock') {
+      if (title === 'Total Products') return activeTab === 'shop-stock' ? 'All products in shop' : 'All products in warehouse';
+      return 'Current page totals';
     }
     return '';
   };
@@ -882,33 +1045,24 @@ export const Reports = () => {
           { header: 'Last order', key: 'lastOrderLabel', width: 14 }
         ];
         break;
+      case 'warehouse-stock':
+      case 'shop-stock':
+        columns = [
+          { header: 'S.NO', key: 'sno', width: 8, type: 'number' },
+          { header: 'Product', key: 'productName', width: 40 },
+          { header: 'SKU', key: 'productSku', width: 18 },
+          { header: 'On Hand', key: 'quantity', width: 12, type: 'number' },
+          { header: 'Reserved', key: 'reservedQuantity', width: 12, type: 'number' },
+          { header: 'Available', key: 'availableQuantity', width: 12, type: 'number' },
+        ];
+        break;
     }
 
     return {
       title: reportTitle,
       filename: `${reportTitle.replace(/ /g, '_')}_${new Date().toLocaleDateString()}.xlsx`,
       columns,
-      data: data.map((item, i) => ({
-        ...item,
-        sno: i + 1,
-        productName: item.product?.name,
-        sku: item.product?.sku,
-        customerLabel:
-          item.customer?.businessName ||
-          [item.customer?.firstName, item.customer?.lastName].filter(Boolean).join(' ') ||
-          item.businessName ||
-          item.name,
-        lastOrderLabel: item.lastOrderDate
-          ? new Date(item.lastOrderDate).toLocaleDateString()
-          : '',
-        name:
-          item.businessName ||
-          item.name ||
-          item.accountName ||
-          item.productName ||
-          item.bankName ||
-          item.product?.name
-      })),
+      data: data.map(formatReportRowForExport),
       summary: (() => {
         if (activeTab === 'inventory' && inventoryType === 'stock-summary') {
           return {
@@ -957,13 +1111,13 @@ export const Reports = () => {
     <PageShell className="bg-gray-50" contentClassName="space-y-6 p-4 md:p-6">
       {/* Header & Global Filters */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Reporting Dashboard</h1>
-          <p className="text-gray-500 text-sm">Real-time business analytics & financial reports</p>
-        </div>
+        <PageHeader
+          title="Reporting Dashboard"
+          subtitle="Real-time business analytics & financial reports"
+        />
 
-        <div className="flex flex-wrap md:flex-nowrap items-center gap-3">
-          {(activeTab !== 'bank-cash') && (activeTab !== 'inventory' || inventoryType === 'stock-summary') && (
+        <div className="flex flex-wrap md:flex-nowrap items-center gap-3 shrink-0">
+          {(activeTab !== 'bank-cash' && activeTab !== 'warehouse-stock' && activeTab !== 'shop-stock') && (activeTab !== 'inventory' || inventoryType === 'stock-summary') && (
             <DateFilter
               startDate={dateRange.from}
               endDate={dateRange.to}
@@ -980,7 +1134,11 @@ export const Reports = () => {
             className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors h-10 w-10 flex items-center justify-center border border-gray-200 bg-white"
             title="Refresh data (bypasses server report cache for ~90s TTL)"
           >
-            <RefreshCcw className={`h-5 w-5 ${(summaryLoading || partyLoading || salesLoading || productReportLoading || customerReportLoading || inventoryLoading || financialLoading || bankCashLoading) ? 'animate-spin' : ''}`} />
+            {(summaryLoading || partyLoading || salesLoading || productReportLoading || customerReportLoading || inventoryLoading || financialLoading || bankCashLoading) ? (
+              <LoadingSpinner size="sm" />
+            ) : (
+              <RefreshCcw className="h-5 w-5" />
+            )}
           </button>
 
           {/* Desktop Actions */}
@@ -1049,6 +1207,10 @@ export const Reports = () => {
             if (title === 'Low Stock') return <AlertTriangle className="h-6 w-6 text-amber-600" />;
             if (title === 'Out of Stock') return <XCircle className="h-6 w-6 text-red-600" />;
             if (title === 'Combined Balance') return <DollarSign className="h-6 w-6 text-indigo-600" />;
+            if (title === 'Total Products') return <Package className="h-6 w-6 text-blue-600" />;
+            if (title === 'In Stock (page)') return <CheckCircle className="h-6 w-6 text-green-600" />;
+            if (title === 'On Hand (page)') return <Warehouse className="h-6 w-6 text-slate-600" />;
+            if (title === 'Available (page)') return <ShoppingBag className="h-6 w-6 text-emerald-600" />;
             return idx === 0 ? <Users className="h-6 w-6 text-blue-600" /> :
               idx === 1 ? <TrendingUp className="h-6 w-6 text-purple-600" /> :
                 <Package className="h-6 w-6 text-gray-600" />;
@@ -1060,6 +1222,10 @@ export const Reports = () => {
             if (title === 'Low Stock') return "bg-amber-50";
             if (title === 'Out of Stock') return "bg-red-50";
             if (title === 'Combined Balance') return "bg-indigo-50";
+            if (title === 'Total Products') return "bg-blue-50";
+            if (title === 'In Stock (page)') return "bg-green-50";
+            if (title === 'On Hand (page)') return "bg-slate-50";
+            if (title === 'Available (page)') return "bg-emerald-50";
             return idx === 0 ? "bg-blue-50" :
               idx === 1 ? "bg-purple-50" :
                 "bg-gray-50";
@@ -1110,6 +1276,20 @@ export const Reports = () => {
               onClick={() => setActiveTab('inventory')}
               label="Inventory"
             />
+            {warehouseInventoryEnabled && (
+              <>
+                <TabButton
+                  active={activeTab === 'warehouse-stock'}
+                  onClick={() => setActiveTab('warehouse-stock')}
+                  label="Warehouse Stock"
+                />
+                <TabButton
+                  active={activeTab === 'shop-stock'}
+                  onClick={() => setActiveTab('shop-stock')}
+                  label="Shop Stock"
+                />
+              </>
+            )}
             <TabButton
               active={activeTab === 'financial'}
               onClick={() => setActiveTab('financial')}
@@ -1165,7 +1345,7 @@ export const Reports = () => {
                     {partyLoading ? (
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center">
-                          <div className="flex justify-center"><RefreshCcw className="h-6 w-6 animate-spin text-gray-400" /></div>
+                          <div className="flex justify-center"><LoadingSpinner size="lg" /></div>
                         </td>
                       </tr>
                     ) : partyBalanceTotal === 0 ? (
@@ -1179,7 +1359,7 @@ export const Reports = () => {
                           <tr key={row.id || idx} className="hover:bg-gray-50 transition-colors">
                             {getColumns().map((col, colIdx) => (
                               <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                                {col.render ? col.render(row, rowIndex) : row[col.key]}
+                                {renderReportCell(col, row, rowIndex)}
                               </td>
                             ))}
                           </tr>
@@ -1207,7 +1387,7 @@ export const Reports = () => {
                                 <tr key={vr.key} className="hover:bg-gray-50 transition-colors" style={{ height: vr.size }}>
                                   {cols.map((col, colIdx) => (
                                     <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                                      {col.render ? col.render(row, rowIndex) : row[col.key]}
+                                      {renderReportCell(col, row, rowIndex)}
                                     </td>
                                   ))}
                                 </tr>
@@ -1315,7 +1495,7 @@ export const Reports = () => {
                     {salesLoading ? (
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center">
-                          <div className="flex justify-center"><RefreshCcw className="h-6 w-6 animate-spin text-gray-400" /></div>
+                          <div className="flex justify-center"><LoadingSpinner size="lg" /></div>
                         </td>
                       </tr>
                     ) : salesReportData?.data?.length === 0 ? (
@@ -1327,7 +1507,7 @@ export const Reports = () => {
                         <tr key={idx} className="hover:bg-gray-50 transition-colors">
                           {getColumns().map((col, colIdx) => (
                             <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                              {col.render ? col.render(row) : row[col.key]}
+                              {renderReportCell(col, row)}
                             </td>
                           ))}
                         </tr>
@@ -1354,7 +1534,7 @@ export const Reports = () => {
                       <option value="">All suppliers</option>
                       {inventorySupplierOptions.map((s) => {
                         const id = s.id || s._id;
-                        const label = s.companyName || s.businessName || s.name || id;
+                        const label = getSupplierDisplayName(s, id);
                         return (
                           <option key={id} value={id}>
                             {label}
@@ -1395,7 +1575,7 @@ export const Reports = () => {
                     {productReportLoading ? (
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center">
-                          <div className="flex justify-center"><RefreshCcw className="h-6 w-6 animate-spin text-gray-400" /></div>
+                          <div className="flex justify-center"><LoadingSpinner size="lg" /></div>
                         </td>
                       </tr>
                     ) : (productReportData?.products?.length ?? 0) === 0 ? (
@@ -1407,7 +1587,7 @@ export const Reports = () => {
                         <tr key={row.product?.id || row.product?._id || idx} className="hover:bg-gray-50 transition-colors">
                           {getColumns().map((col, colIdx) => (
                             <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                              {col.render ? col.render(row, idx) : row[col.key]}
+                              {renderReportCell(col, row, idx)}
                             </td>
                           ))}
                         </tr>
@@ -1440,7 +1620,7 @@ export const Reports = () => {
                     {customerReportLoading ? (
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center">
-                          <div className="flex justify-center"><RefreshCcw className="h-6 w-6 animate-spin text-gray-400" /></div>
+                          <div className="flex justify-center"><LoadingSpinner size="lg" /></div>
                         </td>
                       </tr>
                     ) : (customerReportData?.customers?.length ?? 0) === 0 ? (
@@ -1452,7 +1632,7 @@ export const Reports = () => {
                         <tr key={row.customer?.id || row.customer?._id || idx} className="hover:bg-gray-50 transition-colors">
                           {getColumns().map((col, colIdx) => (
                             <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                              {col.render ? col.render(row, idx) : row[col.key]}
+                              {renderReportCell(col, row, idx)}
                             </td>
                           ))}
                         </tr>
@@ -1518,7 +1698,7 @@ export const Reports = () => {
                       <option value="">All suppliers</option>
                       {inventorySupplierOptions.map((s) => {
                         const id = s.id || s._id;
-                        const label = s.companyName || s.businessName || s.name || id;
+                        const label = getSupplierDisplayName(s, id);
                         return (
                           <option key={id} value={id}>
                             {label}
@@ -1565,7 +1745,7 @@ export const Reports = () => {
                     {inventoryLoading ? (
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center">
-                          <div className="flex justify-center"><RefreshCcw className="h-6 w-6 animate-spin text-gray-400" /></div>
+                          <div className="flex justify-center"><LoadingSpinner size="lg" /></div>
                         </td>
                       </tr>
                     ) : (isInventoryPaginated
@@ -1581,7 +1761,7 @@ export const Reports = () => {
                             <tr key={row.id || idx} className="hover:bg-gray-50 transition-colors">
                               {getColumns().map((col, colIdx) => (
                                 <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                                  {col.render ? col.render(row, idx) : row[col.key]}
+                                  {renderReportCell(col, row, idx)}
                                 </td>
                               ))}
                             </tr>
@@ -1591,12 +1771,11 @@ export const Reports = () => {
                             <tr key={row.id || idx} className="hover:bg-gray-50 transition-colors">
                               {getColumns().map((col, colIdx) => (
                                 <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                                  {col.render
-                                    ? col.render(
-                                      row,
-                                      (Math.min(stockSummaryPage, stockSummaryTotalPages) - 1) * stockSummaryPageSize + idx
-                                    )
-                                    : row[col.key]}
+                                  {renderReportCell(
+                                    col,
+                                    row,
+                                    (Math.min(stockSummaryPage, stockSummaryTotalPages) - 1) * stockSummaryPageSize + idx
+                                  )}
                                 </td>
                               ))}
                             </tr>
@@ -1623,7 +1802,7 @@ export const Reports = () => {
                                     <tr key={vr.key} className="hover:bg-gray-50 transition-colors" style={{ height: vr.size }}>
                                       {cols.map((col, colIdx) => (
                                         <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                                          {col.render ? col.render(row, rowIndex) : row[col.key]}
+                                          {renderReportCell(col, row, rowIndex)}
                                         </td>
                                       ))}
                                     </tr>
@@ -1721,6 +1900,21 @@ export const Reports = () => {
             </div>
           )}
 
+          {activeTab === 'warehouse-stock' && (
+            <WarehouseStockReportSection
+              active
+              onReportDataChange={setWarehouseStockReport}
+            />
+          )}
+
+          {activeTab === 'shop-stock' && (
+            <LocationStockReportSection
+              active
+              locationType="shop"
+              onReportDataChange={setShopStockReport}
+            />
+          )}
+
           {activeTab === 'financial' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between flex-wrap gap-4">
@@ -1760,7 +1954,7 @@ export const Reports = () => {
                     {financialLoading ? (
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center">
-                          <div className="flex justify-center"><RefreshCcw className="h-6 w-6 animate-spin text-gray-400" /></div>
+                          <div className="flex justify-center"><LoadingSpinner size="lg" /></div>
                         </td>
                       </tr>
                     ) : financialReportData?.data?.length === 0 ? (
@@ -1773,7 +1967,7 @@ export const Reports = () => {
                           <tr key={idx} className="hover:bg-gray-50 transition-colors">
                             {getColumns().map((col, colIdx) => (
                               <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                                {col.render ? col.render(row) : row[col.key]}
+                                {renderReportCell(col, row)}
                               </td>
                             ))}
                           </tr>
@@ -2020,7 +2214,7 @@ export const Reports = () => {
                     {bankCashLoading ? (
                       <tr>
                         <td colSpan={getColumns().length} className="px-6 py-10 text-center">
-                          <div className="flex justify-center"><RefreshCcw className="h-6 w-6 animate-spin text-gray-400" /></div>
+                          <div className="flex justify-center"><LoadingSpinner size="lg" /></div>
                         </td>
                       </tr>
                     ) : bankCashSummaryData?.banks?.length === 0 ? (
@@ -2032,7 +2226,7 @@ export const Reports = () => {
                         <tr key={row.id || idx} className="hover:bg-gray-50 transition-colors">
                           {getColumns().map((col, colIdx) => (
                             <td key={colIdx} className={`px-6 py-4 whitespace-nowrap text-sm ${col.align === 'right' ? 'text-right' : 'text-left'} ${col.bold ? 'font-bold' : ''}`}>
-                              {col.render ? col.render(row) : row[col.key]}
+                              {renderReportCell(col, row)}
                             </td>
                           ))}
                         </tr>
@@ -2051,7 +2245,7 @@ export const Reports = () => {
         isOpen={isPrintModalOpen}
         onClose={() => setIsPrintModalOpen(false)}
         reportTitle={getReportTitle()}
-        data={getReportData()}
+        data={getReportData().map((item, i) => formatReportRowForExport(item, i))}
         columns={getColumns()}
         filters={{
           dateFrom: dateRange.from,

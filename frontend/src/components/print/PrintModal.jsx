@@ -1,10 +1,11 @@
-import React, { useRef, useCallback, useEffect } from 'react';
+import React, { useRef, useCallback, useEffect, useState } from 'react';
 import BaseModal from '../BaseModal';
 import { Button } from '@/components/ui/button';
 import PrintWrapper from './PrintWrapper';
 import PrintTrigger from './PrintTrigger';
 import { PRINT_PAGE_STYLE } from './printPageStyle';
 import PdfExportButton from '../PdfExportButton';
+import WhatsAppShareButton from '../invoice/WhatsAppShareButton';
 
 /**
  * PrintModal - Unified print preview modal using BaseModal + react-to-print.
@@ -28,10 +29,22 @@ const PrintModal = ({
   autoPrint = false,
   zIndex = 50,
   getPdfData,
+  shareConfig,
   onAfterPrint,
   pageStyle = PRINT_PAGE_STYLE
 }) => {
   const printRef = useRef(null);
+  const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 768px)').matches : false
+  );
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 768px)');
+    const syncViewport = () => setIsNarrowViewport(mediaQuery.matches);
+    syncViewport();
+    mediaQuery.addEventListener('change', syncViewport);
+    return () => mediaQuery.removeEventListener('change', syncViewport);
+  }, []);
 
   const handlePrint = useCallback(() => {
     if (printRef.current?.print) {
@@ -47,11 +60,21 @@ const PrintModal = ({
   }, [isOpen, autoPrint, hasData, handlePrint]);
 
   const footer = (
-    <div className="flex justify-end gap-3 no-print">
+    <div className="flex flex-wrap justify-end gap-3 no-print">
+      {shareConfig?.orderData && (
+        <WhatsAppShareButton
+          orderData={shareConfig.orderData}
+          documentTitle={shareConfig.documentTitle || documentTitle}
+          partyLabel={shareConfig.partyLabel || 'Customer'}
+          ledgerBalance={shareConfig.ledgerBalance}
+          requireSaved={shareConfig.requireSaved !== false}
+          label="WhatsApp"
+        />
+      )}
       {getPdfData && (
-        <PdfExportButton 
-          getData={getPdfData} 
-          label="Download PDF" 
+        <PdfExportButton
+          getData={getPdfData}
+          label="Download PDF"
           className="bg-red-600 text-white hover:bg-red-700 hover:text-white border-red-600"
         />
       )}
@@ -72,9 +95,9 @@ const PrintModal = ({
       isOpen={isOpen}
       onClose={onClose}
       title={`${documentTitle} – Print Preview`}
-      maxWidth="2xl"
+      maxWidth={isNarrowViewport ? 'full' : '2xl'}
       variant="centered"
-      contentClassName="p-4 overflow-auto max-h-[75vh] min-w-0 flex justify-center"
+      contentClassName="p-3 sm:p-4 overflow-x-hidden overflow-y-auto max-h-[75vh] min-w-0 flex justify-center"
       className="max-h-[90vh] flex flex-col"
       footer={footer}
       zIndex={zIndex}
@@ -86,7 +109,7 @@ const PrintModal = ({
         onAfterPrint={onAfterPrint}
       >
         {hasData ? (
-          <div className="print-preview-scale print-modal-preview max-w-full overflow-auto flex justify-center">
+          <div className="print-preview-scale print-modal-preview w-full max-w-full overflow-x-hidden flex justify-center">
             {children}
           </div>
         ) : (

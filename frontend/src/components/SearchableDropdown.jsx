@@ -1,12 +1,21 @@
-import React, { useState, useEffect, useRef, forwardRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, forwardRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Search, ChevronDown, Check } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { LoadingInline } from '@/components/LoadingSpinner';
 
 const EMPTY_ARRAY = [];
 
 const DEFAULT_INITIAL_LIMIT = 20;
+
+/** Default portal z-index on regular pages. */
+const DROPDOWN_Z_INDEX = 40;
+/** Above Headless UI Dialog overlays (z-50). */
+const MODAL_DROPDOWN_Z_INDEX = 60;
+
+const isModalDialogOpen = () =>
+  typeof document !== 'undefined' && Boolean(document.querySelector('[aria-modal="true"]'));
 
 /** Lowercased tokens from whitespace; used so "air hd717" matches "AIR FLOW HD717". */
 function splitSearchTokensLower(term) {
@@ -16,8 +25,8 @@ function splitSearchTokensLower(term) {
     .split(/\s+/)
     .filter((t) => t.length > 0);
 }
-/** Initial estimate before measure; customer rows can be multi-line (name + balance). */
-const DROPDOWN_ROW_ESTIMATE = 72;
+/** Initial estimate before measure; single-line rows ~36px, multi-line measured dynamically. */
+const DROPDOWN_ROW_ESTIMATE = 40;
 
 /** Stable id for list deduping when valueKey may not match (e.g. id vs _id). */
 const getItemId = (item, valueKey) => {
@@ -47,7 +56,13 @@ export const SearchableDropdown = forwardRef(({
   openOnFocus = false,
   rightContentKey = null, // Function or key to get right-side content (e.g., city)
   /** Max rows when not searching; type to see full filtered list. Set null to show all (legacy). */
-  maxInitialItems = DEFAULT_INITIAL_LIMIT
+  maxInitialItems = DEFAULT_INITIAL_LIMIT,
+  /** When true, items are pre-filtered by the server; skip local token matching. */
+  serverSideSearch = false,
+  /** When true, allow dropdown inside modal dialogs (higher z-index, no auto-close). */
+  withinModal = false,
+  /** Optional z-index override for the portaled dropdown list. */
+  dropdownZIndex,
 }, ref) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -57,8 +72,9 @@ export const SearchableDropdown = forwardRef(({
   const inputRef = useRef(null);
   const containerRef = useRef(null);
   const dropdownRef = useRef(null);
+  /** Skip one focus-open after mouse selection (focus restore must not reopen the list). */
+  const skipNextOpenOnFocusRef = useRef(false);
   const listScrollRef = useRef(null);
-  const itemRefs = useRef([]);
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
 
   const rowVirtualizer = useVirtualizer({
@@ -67,6 +83,13 @@ export const SearchableDropdown = forwardRef(({
     estimateSize: () => DROPDOWN_ROW_ESTIMATE,
     overscan: 8,
   });
+
+  // Re-measure rows when the list opens or changes so virtual slots match actual height.
+  useLayoutEffect(() => {
+    if (isOpen && filteredItems.length > 0) {
+      rowVirtualizer.measure();
+    }
+  }, [isOpen, filteredItems.length]);
 
   const valueToDisplayString = (value) => {
     if (value == null) return '';
@@ -157,6 +180,32 @@ export const SearchableDropdown = forwardRef(({
     }
   }, [value]);
 
+  const portalZIndex = dropdownZIndex ?? (withinModal ? MODAL_DROPDOWN_Z_INDEX : DROPDOWN_Z_INDEX);
+  const blockForModal = () => !withinModal && isModalDialogOpen();
+
+  // Close dropdown when a modal dialog opens (e.g. duplicate line merge) — not when embedded in one.
+  useEffect(() => {
+    if (!isOpen || withinModal) return;
+
+    const closeIfModalOpen = () => {
+      if (isModalDialogOpen()) {
+        setIsOpen(false);
+        setSelectedIndex(-1);
+      }
+    };
+
+    closeIfModalOpen();
+    const observer = new MutationObserver(closeIfModalOpen);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-modal'],
+    });
+
+    return () => observer.disconnect();
+  }, [isOpen, withinModal]);
+
   // Store displayKey in a ref to avoid unnecessary re-renders when it's a function
   const displayKeyRef = useRef(displayKey);
   useEffect(() => {
@@ -168,6 +217,37 @@ export const SearchableDropdown = forwardRef(({
     const rawTerm = value !== null ? value : searchTerm;
     const currentSearchTerm = typeof rawTerm === 'string' ? rawTerm.trim() : '';
     const currentDisplayKey = displayKeyRef.current;
+
+    if (serverSideSearch) {
+      // Server returns matches, but still cap rows when the box is empty (browse on focus).
+      if (!currentSearchTerm) {
+        if (maxInitialItems == null || maxInitialItems === false || maxInitialItems <= 0) {
+          setFilteredItems(items);
+        } else if (items.length <= maxInitialItems) {
+          setFilteredItems(items);
+        } else {
+          const seen = new Set();
+          const out = [];
+          const selId = getItemId(selectedItem, valueKey);
+          if (selectedItem && selId != null) {
+            out.push(selectedItem);
+            seen.add(selId);
+          }
+          for (let i = 0; i < items.length && out.length < maxInitialItems; i++) {
+            const item = items[i];
+            const id = getItemId(item, valueKey);
+            if (id != null && seen.has(id)) continue;
+            if (id != null) seen.add(id);
+            out.push(item);
+          }
+          setFilteredItems(out);
+        }
+      } else {
+        setFilteredItems(items);
+      }
+      setSelectedIndex(-1);
+      return;
+    }
 
     if (currentSearchTerm) {
       const tokensLower = splitSearchTokensLower(currentSearchTerm);
@@ -244,7 +324,7 @@ export const SearchableDropdown = forwardRef(({
     }
     setFilteredItems(out);
     setSelectedIndex(-1);
-  }, [value, searchTerm, items, selectedItem, valueKey, maxInitialItems]); // displayKey via ref
+  }, [value, searchTerm, items, selectedItem, valueKey, maxInitialItems, serverSideSearch]); // displayKey via ref
 
   // Handle search
   const handleSearch = (term) => {
@@ -273,6 +353,7 @@ export const SearchableDropdown = forwardRef(({
     setSelectedIndex(-1);
     // Mouse clicks happen on portal list buttons; restore focus so Tab continues to next form field.
     if (restoreInputFocus && inputRef.current) {
+      skipNextOpenOnFocusRef.current = true;
       requestAnimationFrame(() => {
         inputRef.current?.focus({ preventScroll: true });
       });
@@ -460,6 +541,7 @@ export const SearchableDropdown = forwardRef(({
   const hasCustomPadding = className.includes('pr-');
 
   const handleInputClick = () => {
+    if (blockForModal()) return;
     // Open dropdown when clicking on input (if there are items or a search term)
     if (items.length > 0 || searchTerm || value) {
       setIsOpen(true);
@@ -495,6 +577,11 @@ export const SearchableDropdown = forwardRef(({
           onKeyDown={handleKeyDown}
           onClick={handleInputClick}
           onFocus={() => {
+            if (blockForModal()) return;
+            if (skipNextOpenOnFocusRef.current) {
+              skipNextOpenOnFocusRef.current = false;
+              return;
+            }
             // Only open on focus if openOnFocus prop is explicitly set to true
             if (openOnFocus) {
               setIsOpen(true);
@@ -513,8 +600,9 @@ export const SearchableDropdown = forwardRef(({
       {isOpen && createPortal(
         <div
           ref={dropdownRef}
-          className="fixed z-[9999] max-h-96 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
+          className="fixed max-h-96 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
           style={{
+            zIndex: portalZIndex,
             top: `${dropdownPosition.top}px`,
             left: `${dropdownPosition.left}px`,
             width: `${dropdownPosition.width}px`
@@ -522,8 +610,7 @@ export const SearchableDropdown = forwardRef(({
         >
           {loading ? (
             <div className="p-3 text-center text-gray-500">
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600 mx-auto"></div>
-              <p className="mt-2 text-sm">Loading...</p>
+              <LoadingInline />
             </div>
           ) : filteredItems.length > 0 ? (
             <div
@@ -545,10 +632,7 @@ export const SearchableDropdown = forwardRef(({
                     <div
                       key={virtualRow.key}
                       data-index={virtualRow.index}
-                      ref={(node) => {
-                        rowVirtualizer.measureElement(node);
-                        itemRefs.current[index] = node;
-                      }}
+                      ref={rowVirtualizer.measureElement}
                       className="absolute left-0 top-0 w-full"
                       style={{
                         transform: `translateY(${virtualRow.start}px)`,
@@ -556,12 +640,13 @@ export const SearchableDropdown = forwardRef(({
                     >
                       <button
                         type="button"
+                        onMouseDown={(e) => e.preventDefault()}
                         onClick={() => handleSelect(item, { restoreInputFocus: true })}
-                        className={`flex min-h-[44px] w-full items-start justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50 focus:bg-gray-50 focus:outline-none ${isSelected ? 'bg-primary-50 text-primary-700' : 'text-gray-900'
+                        className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm hover:bg-gray-50 focus:bg-gray-50 focus:outline-none ${isSelected ? 'bg-primary-50 text-primary-700' : 'text-gray-900'
                           }`}
                       >
                         <span className="min-w-0 flex-1">{getDisplayValue(item)}</span>
-                        <span className="flex shrink-0 items-start gap-2 pt-0.5">
+                        <span className="flex shrink-0 items-center gap-2">
                           {getRightContent(item) && (
                             <span className="text-xs text-gray-500">{getRightContent(item)}</span>
                           )}

@@ -32,6 +32,7 @@ router.get('/', [
     })
     .withMessage('Amount must be a positive number'),
   query('particular').optional().isString().trim().withMessage('Particular must be a string'),
+  query('expenseOnly').optional({ checkFalsy: true }).isBoolean().withMessage('expenseOnly must be boolean'),
   handleValidationErrors,
   processDateFilter('date'),
 ], async (req, res) => {
@@ -47,7 +48,8 @@ router.get('/', [
       all: allParam,
       voucherCode,
       amount,
-      particular
+      particular,
+      expenseOnly: expenseOnlyParam,
     } = req.query;
     const limit = (allParam === true || allParam === 'true') ? 999999 : (parseInt(limitParam, 10) || 50);
 
@@ -59,7 +61,8 @@ router.get('/', [
       endDate: req.dateRange?.endDate ? (getEndOfDayPakistan(req.dateRange.endDate) || new Date(req.dateRange.endDate)) : null,
       voucherCode: voucherCode || undefined,
       amount: amount ? parseFloat(amount) : undefined,
-      particular: particular || undefined
+      particular: particular || undefined,
+      expenseOnly: expenseOnlyParam === true || expenseOnlyParam === 'true',
     };
 
     const result = await cashPaymentRepository.findWithPagination(filter, {
@@ -203,6 +206,11 @@ router.post('/', [
         await AccountingService.recordCashPayment(payment, client);
       }
 
+      const dailyCashService = require('../services/dailyCashService');
+      await dailyCashService.recordCashPayment(req.user._id || req.user.id, payment, {
+        isExpense: isExpenseOnly,
+      }, client);
+
       return payment;
     });
 
@@ -242,6 +250,9 @@ router.post('/', [
       data: responseData
     });
   } catch (error) {
+    if (error.code === 'DAY_ALREADY_CLOSED') {
+      return res.status(400).json({ success: false, message: error.message, code: error.code });
+    }
     console.error('Create cash payment error:', error);
     console.error('Error stack:', error.stack);
     res.status(500).json({

@@ -16,9 +16,12 @@ import {
 } from 'lucide-react';
 import { useGetAnomaliesQuery, useGetSummaryQuery } from '../store/services/anomalyDetectionApi';
 import { formatCurrency } from '../utils/formatters';
-import { LoadingSpinner } from '../components/LoadingSpinner';
+import { LoadingPage } from '../components/LoadingSpinner';
 import { showErrorToast, handleApiError } from '../utils/errorHandler';
 import { Button } from '@/components/ui/button';
+import { PageLayout } from '../components/layout/PageLayout';
+import { PageHeader } from '../components/layout/PageHeader';
+import DateFilter from '../components/DateFilter';
 
 const AnomalyDetection = () => {
   const [filters, setFilters] = useState({
@@ -40,7 +43,7 @@ const AnomalyDetection = () => {
 
   React.useEffect(() => {
     if (error) {
-      showErrorToast(handleApiError(error));
+      showErrorToast(error);
     }
   }, [error]);
 
@@ -95,18 +98,16 @@ const AnomalyDetection = () => {
   };
 
   if (isLoading) {
-    return <LoadingSpinner />;
+    return <LoadingPage useSpinningText={false} />;
   }
 
   return (
-    <div className="space-y-6 p-4 md:p-6">
-      {/* Header */}
-      <div className="flex flex-col">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Anomaly Detection & Fraud Prevention</h1>
-          <p className="text-gray-600 text-sm md:text-base mt-1">AI-powered detection of unusual patterns and potential fraud</p>
-        </div>
-      </div>
+    <PageLayout>
+      <PageHeader
+        title="Anomaly Detection & Fraud Prevention"
+        subtitle="AI-powered detection of unusual patterns and potential fraud"
+        icon={AlertTriangle}
+      />
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -177,17 +178,15 @@ const AnomalyDetection = () => {
               <option value="medium">Medium</option>
               <option value="low">Low</option>
             </select>
-            <input
-              type="date"
-              value={filters.startDate}
-              onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
-              className="input text-sm"
-            />
-            <input
-              type="date"
-              value={filters.endDate}
-              onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
-              className="input text-sm"
+            <DateFilter
+              startDate={filters.startDate}
+              endDate={filters.endDate}
+              onDateChange={(startDate, endDate) => setFilters({ ...filters, startDate, endDate })}
+              compact
+              showPresets={false}
+              showClear={false}
+              showLabel={false}
+              size="sm"
             />
             <Button
               onClick={() => setFilters({ type: '', severity: '', startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], endDate: new Date().toISOString().split('T')[0] })}
@@ -326,7 +325,7 @@ const AnomalyDetection = () => {
           </p>
         </div>
       )}
-    </div>
+    </PageLayout>
   );
 };
 

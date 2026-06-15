@@ -1,23 +1,21 @@
 const express = require('express');
 const { body, param, query } = require('express-validator');
-const { auth, requirePermission } = require('../middleware/auth');
+const { auth, requirePermission, requireAnyPermission } = require('../middleware/auth');
 const { handleValidationErrors, sanitizeRequest } = require('../middleware/validation');
 const inventoryService = require('../services/inventoryService');
 const inventoryRepository = require('../repositories/InventoryRepository');
 const productRepository = require('../repositories/ProductRepository');
 const productService = require('../services/productServicePostgres');
+const { parseListQuery, buildPaginationMeta } = require('../utils/listQuery');
 const stockAdjustmentRepository = require('../repositories/StockAdjustmentRepository');
+const warehouseRepository = require('../repositories/WarehouseRepository');
+const locationStockService = require('../services/locationStockService');
+const settingsService = require('../services/settingsService');
+const { isWarehouseInventoryEnabled } = require('../utils/warehouseInventory');
+
+const { transformCustomerToUppercase, transformProductToUppercase, transformSupplierToUppercase } = require('../utils/displayTransforms');
 
 const router = express.Router();
-
-// Helper function to transform product names to uppercase
-const transformProductToUppercase = (product) => {
-  if (!product) return product;
-  if (product.toObject) product = product.toObject();
-  if (product.name) product.name = product.name.toUpperCase();
-  if (product.description) product.description = product.description.toUpperCase();
-  return product;
-};
 
 // @route   GET /api/inventory
 // @desc    Get inventory list with filters and pagination
@@ -71,99 +69,174 @@ router.get('/', [
   handleValidationErrors,
 ], async (req, res) => {
   try {
-    const { page = 1, limit = 10, search, status, lowStock, warehouse } = req.query;
-    const skip = (page - 1) * limit;
+    const { search, page, limit } = parseListQuery(req.query);
+    const { status, lowStock, warehouse } = req.query;
 
-    // Get API-shaped products (all products so inventory page shows full catalog; filter by status in UI if needed)
     const productResult = await productService.getProducts({
       search: search || undefined,
-      limit: 9999,
-      all: 'true'
+      page,
+      limit,
+      status: status === 'inactive' ? 'inactive' : status === 'active' ? 'active' : undefined,
+      lowStock: lowStock === 'true' ? 'true' : undefined,
     });
-    const allProducts = productResult.products || [];
+    const pageProducts = productResult.products || [];
+    const productIds = pageProducts.map((p) => (p.id || p._id).toString()).filter(Boolean);
 
-    // Get existing inventory records (PostgreSQL)
-    const invFilters = {};
-    if (status) invFilters.status = status;
-    if (warehouse) invFilters.warehouse = warehouse;
-    const existingInventoryRows = await inventoryRepository.findAll(invFilters, { limit: 10000 });
+    const inventoryRows =
+      productIds.length > 0
+        ? await inventoryRepository.findByProductIds(productIds)
+        : [];
+    const inventoryByProduct = new Map();
+    for (const invRow of inventoryRows || []) {
+      const pid = (invRow.product_id || invRow.productId || '').toString();
+      if (pid) inventoryByProduct.set(pid, invRow);
+    }
 
-    // Map product_id -> inventory row (with product attached from allProducts)
-    const productById = new Map(allProducts.map(p => [(p.id || p._id).toString(), p]));
-    const inventoryMap = new Map();
-    existingInventoryRows.forEach(invRow => {
-      const product = productById.get((invRow.product_id || invRow.productId || '').toString());
-      if (product) {
-        const location = (typeof invRow.location === 'string' ? (invRow.location ? JSON.parse(invRow.location) : {}) : invRow.location) || {};
-        inventoryMap.set((invRow.product_id || invRow.productId).toString(), {
+    const companySettings = await settingsService.getCompanySettings();
+    const warehouseInventoryEnabled = isWarehouseInventoryEnabled(companySettings);
+
+    let resolvedWarehouseId = null;
+    let warehouseStockCtx = { stockByProduct: new Map(), warehouseName: 'Warehouse', warehouseCode: '' };
+    if (warehouseInventoryEnabled) {
+      if (warehouse) {
+        const whName = String(warehouse).trim().toLowerCase();
+        const whList = await warehouseRepository.findAll({ isActive: true }, { limit: 200 });
+        const match = (whList || []).find(
+          (w) =>
+            String(w.name || '').toLowerCase() === whName
+            || String(w.code || '').toLowerCase() === whName
+            || String(w.name || '').toLowerCase().includes(whName)
+        );
+        resolvedWarehouseId = match?.id || null;
+      }
+
+      if (productIds.length > 0) {
+        try {
+          warehouseStockCtx = await locationStockService.getWarehouseStockForProducts(
+            resolvedWarehouseId,
+            productIds
+          );
+        } catch (_) {
+          /* location tables optional during migration */
+        }
+      }
+    }
+
+    let combinedResults = pageProducts.map((product) => {
+      const pid = (product.id || product._id).toString();
+      const invRow = inventoryByProduct.get(pid);
+      const transformedProduct = transformProductToUppercase(product);
+      const shopCur = Number(product.inventory?.currentStock ?? 0);
+      const shopReserved = Number(product.inventory?.reservedStock ?? 0);
+      const shopAvailable = Number(
+        product.inventory?.availableStock ?? Math.max(0, shopCur - shopReserved)
+      );
+      const legacyCur = Number(
+        invRow?.current_stock ?? invRow?.currentStock ?? shopCur
+      );
+      const legacyReserved = Number(
+        invRow?.reserved_stock ?? invRow?.reservedStock ?? shopReserved
+      );
+      const legacyAvailable = Number(
+        invRow?.available_stock ?? invRow?.availableStock ?? Math.max(0, legacyCur - legacyReserved)
+      );
+
+      const whRow = warehouseStockCtx.stockByProduct.get(pid);
+      const warehouseStock = Number(whRow?.quantity ?? 0);
+      const warehouseReserved = Number(whRow?.reserved_quantity ?? 0);
+      const warehouseAvailable = Math.max(0, warehouseStock - warehouseReserved);
+
+      const base = warehouseInventoryEnabled
+        ? {
+          product: transformedProduct,
+          currentStock: shopCur,
+          availableStock: shopAvailable,
+          reservedStock: shopReserved,
+          stockSource: product.inventory?.stockSource || 'shop',
+          warehouseStock,
+          warehouseAvailableStock: warehouseAvailable,
+          warehouseReservedStock: warehouseReserved,
+          warehouseName: warehouseStockCtx.warehouseName,
+          warehouseCode: warehouseStockCtx.warehouseCode,
+          reorderPoint: product.inventory?.reorderPoint ?? product.inventory?.minStock ?? 0,
+          reorderQuantity: product.inventory?.reorderQuantity ?? 0,
+          pendingTransfer: Math.max(0, warehouseAvailable - shopAvailable),
+          warehouseInventoryEnabled: true,
+        }
+        : {
+          product: transformedProduct,
+          currentStock: legacyCur,
+          availableStock: legacyAvailable,
+          reservedStock: legacyReserved,
+          reorderPoint: product.inventory?.reorderPoint ?? product.inventory?.minStock ?? 0,
+          reorderQuantity: product.inventory?.reorderQuantity ?? 0,
+          warehouseInventoryEnabled: false,
+        };
+
+      if (invRow) {
+        const location =
+          (typeof invRow.location === 'string'
+            ? invRow.location
+              ? JSON.parse(invRow.location)
+              : {}
+            : invRow.location) || {};
+        return {
+          ...base,
           _id: invRow.id,
           id: invRow.id,
-          product: transformProductToUppercase(product),
-          currentStock: invRow.current_stock ?? invRow.currentStock ?? 0,
-          reorderPoint: invRow.reorder_point ?? invRow.reorderPoint ?? 0,
+          reorderPoint: invRow.reorder_point ?? invRow.reorderPoint ?? base.reorderPoint,
           reorderQuantity: invRow.reorder_quantity ?? invRow.reorderQuantity ?? 0,
           status: invRow.status || 'active',
-          movements: (typeof invRow.movements === 'string' ? (invRow.movements ? JSON.parse(invRow.movements) : []) : invRow.movements) || [],
-          location,
+          movements:
+            (typeof invRow.movements === 'string'
+              ? invRow.movements
+                ? JSON.parse(invRow.movements)
+                : []
+              : invRow.movements) || [],
+          location: {
+            ...location,
+            warehouse: warehouseStockCtx.warehouseName || location.warehouse || 'Main Warehouse',
+          },
           createdAt: invRow.created_at ?? invRow.createdAt,
-          updatedAt: invRow.updated_at ?? invRow.updatedAt
-        });
+          updatedAt: invRow.updated_at ?? invRow.updatedAt,
+        };
       }
-    });
-
-    // Combine products with their inventory records (or synthetic)
-    const combinedResults = allProducts.map(product => {
-      const pid = (product.id || product._id).toString();
-      const existingInv = inventoryMap.get(pid);
-      if (existingInv) return existingInv;
-      const transformedProduct = transformProductToUppercase(product);
       return {
+        ...base,
         _id: `temp_${pid}`,
-        product: transformedProduct,
-        currentStock: product.inventory?.currentStock ?? 0,
-        reorderPoint: product.inventory?.reorderPoint ?? product.inventory?.minStock ?? 0,
-        reorderQuantity: product.inventory?.reorderQuantity ?? 0,
         status: 'active',
         movements: [],
-        location: { warehouse: 'Main Warehouse' },
+        location: { warehouse: warehouseStockCtx.warehouseName || 'Main Warehouse' },
         createdAt: product.createdAt ?? product.created_at,
-        updatedAt: product.updatedAt ?? product.updated_at
+        updatedAt: product.updatedAt ?? product.updated_at,
       };
     });
-    
-    // Apply additional filters
-    let filteredResults = combinedResults;
-    
-    if (status) {
-      filteredResults = filteredResults.filter(item => item.status === status);
+
+    if (status && status !== 'active' && status !== 'inactive') {
+      combinedResults = combinedResults.filter((item) => item.status === status);
     }
-    
     if (warehouse) {
-      filteredResults = filteredResults.filter(item => 
-        item.location?.warehouse?.toLowerCase().includes(warehouse.toLowerCase())
+      const wh = String(warehouse).toLowerCase();
+      combinedResults = combinedResults.filter((item) =>
+        item.location?.warehouse?.toLowerCase().includes(wh)
       );
     }
-    
-    if (lowStock === 'true') {
-      filteredResults = filteredResults.filter(item => 
-        item.currentStock <= item.reorderPoint
-      );
-    }
-    
-    // Apply pagination
-    const startIndex = skip;
-    const endIndex = skip + parseInt(limit);
-    const paginatedResults = filteredResults.slice(startIndex, endIndex);
-    
-    
+
+    const pagination = productResult.pagination || buildPaginationMeta({
+      page,
+      limit,
+      total: combinedResults.length,
+    });
+
     res.json({
-      inventory: paginatedResults,
+      inventory: combinedResults,
       pagination: {
-        current: parseInt(page),
-        pages: Math.ceil(filteredResults.length / limit),
-        total: filteredResults.length,
-        hasNext: endIndex < filteredResults.length,
+        current: pagination.current ?? pagination.page ?? page,
+        pages: pagination.pages ?? 1,
+        total: pagination.total ?? combinedResults.length,
+        hasNext: pagination.hasMore ?? pagination.hasNext ?? false,
         hasPrev: page > 1,
+        limit: pagination.limit ?? limit,
       },
     });
     return;
@@ -303,9 +376,9 @@ router.post('/update-stock', [
       type,
       quantity,
       reason,
-      reference,
+      reference: reference || 'Admin stock entry',
       referenceId,
-      referenceModel,
+      referenceModel: referenceModel || 'StockAdjustment',
       cost,
       performedBy: req.user.id,
       notes,
@@ -410,10 +483,10 @@ router.post('/release-stock', [
 
 // @route   POST /api/inventory/adjustments
 // @desc    Create a stock adjustment request
-// @access  Private (requires 'create_inventory_adjustments' permission)
+// @access  Private (requires inventory update permission)
 router.post('/adjustments', [
   auth,
-  requirePermission('create_inventory_adjustments'),
+  requireAnyPermission(['update_inventory', 'manage_inventory']),
   sanitizeRequest,
   body('type').isIn(['physical_count', 'damage', 'theft', 'transfer', 'correction', 'return', 'write_off']).withMessage('Invalid adjustment type'),
   body('reason').trim().notEmpty().withMessage('Reason is required'),
